@@ -1,0 +1,71 @@
+{
+  "name": "vrm-device-spike",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:127.0.0.1:5173 && electron electron/main.cjs\"",
+    "test:electron": "node test/electron-smoke.cjs",
+    "test:project-open-ui": "node test/electron-smoke.cjs --with-project-open-fixture",
+    "test:autosave-ui": "node test/electron-smoke.cjs --with-autosave-fixture",
+    "test:project-ui": "node test/electron-smoke.cjs --with-project-fixture --with-voicevox-fixture",
+    "test:chapter-management-ui": "node test/electron-smoke.cjs --with-chapter-management-fixture",
+    "test:timeline-markers-ui": "node test/electron-smoke.cjs --with-timeline-marker-fixture",
+    "test:character-action-ui": "node test/electron-smoke.cjs --with-character-action-fixture",
+    "test:missing-subtitle-ui": "node test/electron-smoke.cjs --with-missing-subtitle-fixture",
+    "test:invalid-vrm-ui": "node test/electron-smoke.cjs --with-invalid-vrm-fixture",
+    "test:scenario-failure-ui": "node test/electron-smoke.cjs --with-failure-fixture",
+    "test:scenario-rate-limit-ui": "node test/electron-smoke.cjs --with-rate-limit-fixture",
+    "test:scenario-ui": "node test/electron-smoke.cjs --with-scenario-generation",
+    "test:scenario-provider-ui": "node test/electron-smoke.cjs --with-ai-provider-settings",
+    "test:copilot-sdk": "node test/copilot-sdk-smoke.cjs",
+    "test:scenario": "node --experimental-strip-types test/scenario-contract-smoke.mjs",
+    "test:c-runner": "node test/c-runner-smoke.cjs",
+    "test:c-runner-ui": "node test/electron-smoke.cjs --with-c-runner-fixture",
+    "test:c-result-ui": "node test/electron-smoke.cjs --with-c-result-fixture",
+    "test:c-errors-ui": "node test/electron-smoke.cjs --with-c-error-fixture",
+    "test:c-stop-ui": "node test/electron-smoke.cjs --with-c-stop-fixture",
+    "test:voicevox-ui": "node test/electron-smoke.cjs --with-voicevox-fixture --with-project-fixture",
+    "test:voicevox-offline-ui": "node test/electron-smoke.cjs --with-voicevox-offline-fixture",
+    "test:voicevox-empty-speakers-ui": "node test/electron-smoke.cjs --with-voicevox-empty-speakers-fixture",
+    "test:audio-replacement-ui": "node test/electron-smoke.cjs --with-project-fixture --with-audio-replacement-fixture",
+    "test:voicevox-live-ui": "node test/electron-smoke.cjs --with-project-fixture --with-live-voicevox",
+    "test:voicevox": "node test/voicevox-smoke.cjs",
+    "test:voicevox-service": "node test/voicevox-service-smoke.cjs",
+    "test:subtitle-export": "node test/subtitle-export-smoke.cjs",
+    "test:ffmpeg-service": "node test/ffmpeg-service-smoke.cjs",
+    "test:ffmpeg-ui": "node test/electron-smoke.cjs --with-ffmpeg-missing-fixture",
+    "test:ffmpeg-ui-available": "node test/electron-smoke.cjs --with-ffmpeg-available-fixture",
+    "test:video-export": "node test/video-export-smoke.cjs",
+    "test:video-export-e2e": "node test/video-export-electron-smoke.cjs",
+    "test:video-export-sync-e2e": "node test/video-export-electron-smoke.cjs --with-live-voicevox --timeline-sync-only",
+    "test:video-export-sync-mp4-e2e": "node test/video-export-electron-smoke.cjs --with-live-voicevox --timeline-sync-export-only",
+    "test:video-export-missing-audio-e2e": "node test/video-export-electron-smoke.cjs --missing-audio-only",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^1.0.26",
+    "@pixiv/three-vrm": "^3.5.5",
+    "@pixiv/three-vrm-animation": "^3.5.5",
+    "fflate": "^0.8.3",
+    "three": "^0.186.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "concurrently": "^10.0.6",
+    "electron": "^45.0.0",
+    "ffmpeg-static": "^5.3.0",
+    "playwright": "^1.64.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "wait-on": "^9.5.1"
+  },
+  "overrides": {
+    "zod": "4.6.7"
+  },
+  "allowScripts": {
+    "ffmpeg-static@5.3.0": true
+  }
+}

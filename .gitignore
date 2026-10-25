@@ -1,0 +1,25 @@
+# Dependencies and generated build/test output
+/vrm-spike/node_modules/
+/vrm-spike/dist/
+/vrm-spike/test-results/
+
+# Local VRM and motion assets
+*.vrm
+*.vrma
+
+# Generated media in the app workspace
+/vrm-spike/*.mp4
+/vrm-spike/*.srt
+/vrm-spike/*.wav
+
+# Machine-specific editor settings
+/.vscode/
+
+# Credentials and local environment files
+.env
+.env.*
+!.env.example
+
+# Local logs and temporary files
+*.log
+*.tmp

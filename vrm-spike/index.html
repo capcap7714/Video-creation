@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob: ws://127.0.0.1:5173; worker-src 'self' blob:;"
+    />
+    <title>VRM実機スパイク</title>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">DEVICE SPIKE / 01</p>
+          <h1>VRM描画テスト</h1>
+        </div>
+        <span id="runtime-status" class="runtime-status">モデル未読込</span>
+      </header>
+
+      <section class="toolbar" aria-label="描画設定">
+        <label class="file-picker">
+          <span>VRMを開く</span>
+          <input id="model-file" type="file" accept=".vrm,model/gltf-binary" />
+        </label>
+        <label class="file-picker">
+          <span>VRMAモーション</span>
+          <input id="motion-file" type="file" accept=".vrma,model/gltf-binary" disabled />
+        </label>
+        <label class="file-picker">
+          <span>母音タイムライン</span>
+          <input id="mouth-timeline-file" type="file" accept=".json,application/json" disabled />
+        </label>
+        <div class="time-control">
+          <span>再生位置</span>
+          <span class="timeline-track">
+            <input id="timeline" type="range" min="0" max="10" step="0.033333" value="0" aria-label="再生位置" />
+            <span id="timeline-markers" class="timeline-markers" role="group" aria-label="字幕・コード・実行・動作・クレジットのタイムラインマーカー"></span>
+          </span>
+          <output id="time-value" for="timeline">0.00 s</output>
+        </div>
+        <div class="playback-controls" aria-label="プレビュー再生">
+          <button id="play-button" type="button">再生</button>
+          <button id="pause-button" type="button" disabled>一時停止</button>
+          <button id="rewind-button" type="button">先頭へ</button>
+        </div>
+        <button id="capture-button" type="button" disabled>1080p PNG撮影</button>
+        <button id="sequence-button" type="button" disabled>3秒フレームZIP</button>
+        <button id="benchmark-button" type="button" disabled>30fps描画テスト</button>
+        <button id="video-export-button" type="button" disabled>章MP4を書き出す</button>
+        <button id="video-cancel-button" type="button" disabled>書き出しを停止</button>
+        <button id="ffmpeg-check-button" type="button">FFmpegを確認</button>
+        <output id="ffmpeg-status" class="ffmpeg-status" role="status" aria-live="polite">未確認</output>
+        <output id="video-export-status" class="video-export-status" role="status" aria-live="polite"></output>
+      </section>
+
+      <section class="voicevox-panel" aria-labelledby="voicevox-heading">
+        <header class="voicevox-heading">
+          <div>
+            <p class="eyebrow">VOICE / LOCAL ENGINE</p>
+            <h2 id="voicevox-heading">音声試聴</h2>
+          </div>
+          <button id="voicevox-connect-button" type="button">話者一覧を取得</button>
+        </header>
+        <div class="voicevox-controls">
+          <label>話者・スタイル
+            <select id="voicevox-style" disabled></select>
+          </label>
+          <label>試聴テキスト
+            <textarea id="voicevox-text" maxlength="1000" rows="2">こんにちは。VOICEVOXの音声を確認します。</textarea>
+          </label>
+          <button id="voicevox-generate-button" type="button" disabled>試聴音声を生成</button>
+          <audio id="voicevox-audio" controls hidden></audio>
+        </div>
+        <p id="voicevox-status" class="voicevox-status" role="status" aria-live="polite">VOICEVOX Engineを起動して話者一覧を取得してください。</p>
+      </section>
+
+      <section class="stage" aria-label="1920×1080 VRM描画領域">
+        <canvas id="render-canvas" width="1920" height="1080"></canvas>
+        <pre id="video-code-preview" class="video-code-preview" hidden></pre>
+        <pre id="video-result-preview" class="video-result-preview" hidden></pre>
+        <div id="subtitle-preview" class="subtitle-preview" aria-label="字幕プレビュー" aria-live="polite" hidden></div>
+        <section id="credit-preview" class="credit-preview" aria-label="動画末尾のクレジット" hidden>
+          <span>C LANGUAGE / CREDIT</span>
+          <h2 id="credit-preview-title"></h2>
+          <p id="credit-preview-attribution"></p>
+        </section>
+        <div id="empty-state" class="empty-state">
+          <span class="empty-mark" aria-hidden="true">01</span>
+          <p>VRM 1.0モデルを選択</p>
+          <small>1920 × 1080 / 30 fps</small>
+        </div>
+      </section>
+
+      <footer class="readout">
+        <p id="model-readout">モデル: 未選択</p>
+        <p id="mouth-readout">口形: --</p>
+        <p id="result-readout" role="status" aria-live="polite">起動完了。VRMファイルを選択してください。</p>
+      </footer>
+
+      <section class="scenario-workspace" aria-labelledby="scenario-heading">
+        <header class="scenario-heading">
+          <div>
+            <p class="eyebrow">SCENARIO / REVIEW</p>
+            <h2 id="scenario-heading">研修シナリオ</h2>
+          </div>
+          <div class="scenario-heading-status">
+            <output id="scenario-save-status" class="scenario-save-status" role="status" aria-live="polite">未保存</output>
+            <span id="scenario-review-state" class="runtime-status">未生成</span>
+          </div>
+        </header>
+        <div class="scenario-ai-settings">
+          <label for="scenario-ai-provider">シナリオ生成AI</label>
+          <select id="scenario-ai-provider" disabled>
+            <option value="copilot">Copilot SDK</option>
+            <option value="company-api">会社API（未接続）</option>
+          </select>
+          <output id="scenario-ai-provider-status" role="status" aria-live="polite">設定を読み込み中</output>
+        </div>
+        <form id="scenario-request-form" class="scenario-request">
+          <label>教材タイトル
+            <input id="scenario-title" name="title" required maxlength="100" value="C言語の変数入門" />
+          </label>
+          <label>教材概要
+            <textarea id="scenario-overview" name="overview" required minlength="20" maxlength="4000" rows="4">C言語における変数の宣言、値の代入、基本的な型の違いを初心者向けに説明します。</textarea>
+          </label>
+          <div class="scenario-request-row">
+            <label>対象者・前提知識
+              <input id="scenario-audience" name="audience" maxlength="300" value="C言語を初めて学ぶ受講者" />
+            </label>
+            <label>章数
+              <input id="scenario-chapter-count" name="chapterCount" type="number" min="1" max="12" value="2" />
+            </label>
+            <label>1章の目標時間（分）
+              <input id="scenario-target-minutes" name="targetMinutes" type="number" min="1" max="60" value="3" required />
+            </label>
+          </div>
+          <div class="scenario-actions">
+            <button id="scenario-open-button" type="button">プロジェクトを開く</button>
+            <button id="scenario-generate-button" type="submit" disabled>シナリオを生成</button>
+            <button id="scenario-confirm-button" type="button" disabled>内容を確認</button>
+            <button id="scenario-save-button" type="button" disabled>プロジェクトを保存</button>
+          </div>
+          <p id="scenario-message" class="scenario-message" role="status" aria-live="polite">生成した内容は確認・編集後に確定できます。</p>
+        </form>
+        <div id="scenario-editor" class="scenario-editor" aria-live="polite"></div>
+        <div class="chapter-list-actions" hidden>
+          <button id="chapter-add-button" type="button">章を追加</button>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
