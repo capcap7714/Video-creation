@@ -7,6 +7,7 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:127.0.0.1:5173 && electron electron/main.cjs\"",
     "test:electron": "node test/electron-smoke.cjs",
     "test:project-open-ui": "node test/electron-smoke.cjs --with-project-open-fixture",
+    "test:corrupt-project-ui": "node test/electron-smoke.cjs --with-corrupt-project-fixture",
     "test:autosave-ui": "node test/electron-smoke.cjs --with-autosave-fixture",
     "test:project-ui": "node test/electron-smoke.cjs --with-project-fixture --with-voicevox-fixture",
     "test:chapter-management-ui": "node test/electron-smoke.cjs --with-chapter-management-fixture",

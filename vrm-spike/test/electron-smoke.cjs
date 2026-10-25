@@ -9,6 +9,7 @@ const withScenarioGeneration = process.argv.includes('--with-scenario-generation
 const withAiProviderSettings = process.argv.includes('--with-ai-provider-settings');
 const withProjectFixture = process.argv.includes('--with-project-fixture');
 const withProjectOpenFixture = process.argv.includes('--with-project-open-fixture');
+const withCorruptProjectFixture = process.argv.includes('--with-corrupt-project-fixture');
 const withAutosaveFixture = process.argv.includes('--with-autosave-fixture');
 const withFailureFixture = process.argv.includes('--with-failure-fixture');
 const withRateLimitFixture = process.argv.includes('--with-rate-limit-fixture');
@@ -102,7 +103,7 @@ async function main() {
   let aiProviderToRestore;
 
   try {
-    if (withProjectFixture || withProjectOpenFixture || withAutosaveFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
+    if (withProjectFixture || withProjectOpenFixture || withCorruptProjectFixture || withAutosaveFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
       projectDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'c-video-project-ui-'));
       await projectStore.saveScenarioProject(projectDirectory, fixtureRequest, fixtureDraft);
     }
@@ -209,6 +210,7 @@ async function main() {
       assert.equal(await window.locator('#scenario-generate-button').isEnabled(), true);
       assert.deepEqual(await window.evaluate(() => window.scenarioApi.getAiProvider()), { provider: 'copilot' });
       console.log('Scenario AI provider selection, restart persistence, and unconfigured-provider blocking passed');
+      return;
     }
 
     if (withInvalidVrmFixture) {
@@ -395,7 +397,7 @@ async function main() {
       console.log('Scenario generation, manual edit, and review confirmation passed');
     }
 
-    if (withProjectFixture || withProjectOpenFixture || withAutosaveFixture || withAudioReplacementFixture || withMissingSubtitleFixture) {
+    if (withProjectFixture || withProjectOpenFixture || withCorruptProjectFixture || withAutosaveFixture || withAudioReplacementFixture || withMissingSubtitleFixture) {
       console.log('Preparing project dialog fixture');
       const dialogsPatched = await app.evaluate(({ dialog }, selectedPath) => {
         const showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
@@ -412,6 +414,22 @@ async function main() {
           && dialog.showSaveDialog === showSaveDialog;
       }, projectDirectory);
       assert.equal(dialogsPatched, true, 'Electron dialog methods should be replaceable for integration testing');
+
+      if (withCorruptProjectFixture) {
+        const projectPath = path.join(projectDirectory, 'project.json');
+        const malformedProject = '{ invalid project json';
+        await fs.writeFile(projectPath, malformedProject, 'utf8');
+        await window.locator('#scenario-open-button').click();
+        await window.getByText(
+          'プロジェクトを読み込めません。project.jsonと章ファイルの形式、読み取り権限を確認してください。',
+          { exact: true },
+        ).waitFor({ timeout: 15_000 });
+        assert.equal(await window.locator('#scenario-title').inputValue(), 'C言語の変数入門');
+        assert.equal(await window.locator('#scenario-editor fieldset').count(), 0);
+        assert.equal(await fs.readFile(projectPath, 'utf8'), malformedProject, 'failed project open should preserve the original malformed file for recovery');
+        console.log('Malformed project JSON was rejected without changing the visible draft or source file');
+        return;
+      }
 
       console.log('Opening project fixture');
       await window.locator('#scenario-open-button').click();
@@ -481,11 +499,19 @@ async function main() {
           const previousAudioAsset = JSON.parse(await fs.readFile(chapterPath, 'utf8')).audioAsset;
           await window.getByText('字幕タイミング: 本文と一致', { exact: true }).waitFor();
           await window.locator('.subtitle-text').first().fill('手動編集した字幕を保持します。');
+          const firstSubtitleStart = window.locator('.subtitle-start').first();
+          const firstSubtitleEnd = window.locator('.subtitle-end').first();
+          const originalStartSeconds = Number(await firstSubtitleStart.inputValue());
+          const originalEndSeconds = Number(await firstSubtitleEnd.inputValue());
+          await firstSubtitleStart.fill((originalStartSeconds + 0.05).toFixed(3));
+          await firstSubtitleEnd.fill((originalEndSeconds - 0.05).toFixed(3));
           const preservedSubtitles = await window.locator('.subtitle-row').evaluateAll((rows) => rows.map((row) => ({
             startSeconds: Number(row.querySelector('.subtitle-start').value),
             endSeconds: Number(row.querySelector('.subtitle-end').value),
             text: row.querySelector('.subtitle-text').value,
           })));
+          assert.ok(preservedSubtitles[0].startSeconds > originalStartSeconds, 'manual subtitle start adjustment should be applied');
+          assert.ok(preservedSubtitles[0].endSeconds < originalEndSeconds, 'manual subtitle end adjustment should be applied');
           const updatedNarration = `${fixtureDraft.chapters[0].narration} 再生成確認。`;
           await window.locator('.chapter-narration').fill(updatedNarration);
           await window.getByText('字幕タイミング: 要確認（読み上げ本文が変更されています）', { exact: true }).waitFor();
