@@ -4,6 +4,8 @@ const { randomUUID } = require('node:crypto');
 const { createHash } = require('node:crypto');
 
 const MAX_AUDIO_BYTES = 50 * 1024 * 1024;
+const MAX_MODEL_BYTES = 512 * 1024 * 1024;
+const PROJECT_SAVE_RECOVERY_FILE = '.project-save-recovery.json';
 
 async function writeJsonAtomically(filePath, value) {
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
@@ -23,6 +25,69 @@ async function writeBytesAtomically(filePath, bytes) {
   } finally {
     await fs.rm(temporaryPath, { force: true });
   }
+}
+
+async function recoverInterruptedProjectSave(projectDirectory) {
+  const recoveryPath = path.join(projectDirectory, PROJECT_SAVE_RECOVERY_FILE);
+  let journal;
+  try {
+    journal = JSON.parse(await fs.readFile(recoveryPath, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    const recoveryError = new Error('Project save recovery data is invalid.');
+    recoveryError.code = 'PROJECT_SAVE_RECOVERY_INVALID';
+    throw recoveryError;
+  }
+
+  if (journal?.schemaVersion !== 1 || !Array.isArray(journal.files) || journal.files.length < 1) {
+    const error = new Error('Project save recovery data is invalid.');
+    error.code = 'PROJECT_SAVE_RECOVERY_INVALID';
+    throw error;
+  }
+
+  const projectRoot = path.resolve(projectDirectory);
+  try {
+    for (const snapshot of journal.files) {
+      const isProjectFile = snapshot?.path === 'project.json';
+      const isChapterFile = typeof snapshot?.path === 'string'
+        && /^chapters\/\d{2}\/scenario\.json$/.test(snapshot.path);
+      if (
+        (!isProjectFile && !isChapterFile)
+        || typeof snapshot.existed !== 'boolean'
+        || (snapshot.existed && typeof snapshot.contents !== 'string')
+        || (!snapshot.existed && snapshot.contents !== null)
+      ) {
+        const error = new Error('Project save recovery data is invalid.');
+        error.code = 'PROJECT_SAVE_RECOVERY_INVALID';
+        throw error;
+      }
+
+      const filePath = path.resolve(projectRoot, ...snapshot.path.split('/'));
+      if (!filePath.startsWith(`${projectRoot}${path.sep}`)) {
+        const error = new Error('Project save recovery path is invalid.');
+        error.code = 'PROJECT_SAVE_RECOVERY_INVALID';
+        throw error;
+      }
+      if (snapshot.existed) {
+        const contents = Buffer.from(snapshot.contents, 'base64');
+        if (contents.toString('base64') !== snapshot.contents) {
+          const error = new Error('Project save recovery data is invalid.');
+          error.code = 'PROJECT_SAVE_RECOVERY_INVALID';
+          throw error;
+        }
+        await writeBytesAtomically(filePath, contents);
+      } else {
+        await fs.rm(filePath, { force: true });
+      }
+    }
+    await fs.rm(recoveryPath, { force: true });
+  } catch (error) {
+    if (error.code === 'PROJECT_SAVE_RECOVERY_INVALID') throw error;
+    const recoveryError = new Error('Project save recovery failed.');
+    recoveryError.code = 'PROJECT_SAVE_RECOVERY_FAILED';
+    throw recoveryError;
+  }
+  return true;
 }
 
 function getAudioAsset(fileBytes, scenario) {
@@ -46,34 +111,136 @@ function getAudioAsset(fileBytes, scenario) {
 }
 
 async function saveScenarioProject(projectDirectory, request, draft) {
+  await recoverInterruptedProjectSave(projectDirectory);
   const chapterReferences = draft.chapters.map((chapter, index) => {
     const id = String(index + 1).padStart(2, '0');
     const relativePath = `chapters/${id}/scenario.json`;
     return { id, path: relativePath, chapter };
   });
-
-  for (const reference of chapterReferences) {
-    const chapterPath = path.join(projectDirectory, ...reference.path.split('/'));
-    await fs.mkdir(path.dirname(chapterPath), { recursive: true });
-    await writeJsonAtomically(chapterPath, {
-      schemaVersion: 1,
-      chapterId: reference.id,
-      ...reference.chapter,
-    });
+  const projectPath = path.join(projectDirectory, 'project.json');
+  let existingModelAsset;
+  try {
+    const existingProject = JSON.parse(await fs.readFile(projectPath, 'utf8'));
+    if (isValidProjectModelAsset(existingProject.modelAsset)) existingModelAsset = existingProject.modelAsset;
+  } catch (error) {
+    if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
   }
+  const filePaths = [
+    ...chapterReferences.map((reference) => path.join(projectDirectory, ...reference.path.split('/'))),
+    projectPath,
+  ];
+  const snapshots = await Promise.all(filePaths.map(async (filePath) => {
+    try {
+      return { filePath, contents: await fs.readFile(filePath) };
+    } catch (error) {
+      if (error.code === 'ENOENT') return { filePath, contents: null };
+      throw error;
+    }
+  }));
+  const recoveryPath = path.join(projectDirectory, PROJECT_SAVE_RECOVERY_FILE);
+  await writeJsonAtomically(recoveryPath, {
+    schemaVersion: 1,
+    files: snapshots.map((snapshot) => ({
+      path: path.relative(projectDirectory, snapshot.filePath).split(path.sep).join('/'),
+      existed: snapshot.contents !== null,
+      contents: snapshot.contents?.toString('base64') ?? null,
+    })),
+  });
+
+  try {
+    for (const reference of chapterReferences) {
+      const chapterPath = path.join(projectDirectory, ...reference.path.split('/'));
+      await fs.mkdir(path.dirname(chapterPath), { recursive: true });
+      await writeJsonAtomically(chapterPath, {
+        schemaVersion: 1,
+        chapterId: reference.id,
+        ...reference.chapter,
+      });
+    }
+
+    const savedProject = {
+      schemaVersion: 1,
+      title: draft.title,
+      language: 'ja',
+      request,
+      chapters: chapterReferences.map(({ id, path: relativePath }) => ({ id, path: relativePath })),
+    };
+    if (existingModelAsset) savedProject.modelAsset = existingModelAsset;
+    await writeJsonAtomically(projectPath, savedProject);
+    await fs.rm(recoveryPath, { force: true });
+    return projectPath;
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const snapshot of snapshots) {
+      try {
+        if (snapshot.contents === null) await fs.rm(snapshot.filePath, { force: true });
+        else await writeBytesAtomically(snapshot.filePath, snapshot.contents);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length === 0) {
+      try {
+        await fs.rm(recoveryPath, { force: true });
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        'Project save failed and previous files could not be fully restored.',
+      );
+    }
+    throw error;
+  }
+}
+
+function isValidProjectModelAsset(modelAsset) {
+  return typeof modelAsset?.path === 'string'
+    && /^assets\/models\/[a-f0-9]{64}\.vrm$/.test(modelAsset.path)
+    && modelAsset.path === `assets/models/${modelAsset.sha256}.vrm`
+    && typeof modelAsset.fileName === 'string'
+    && modelAsset.fileName.length > 0
+    && Number.isSafeInteger(modelAsset.sizeBytes)
+    && modelAsset.sizeBytes >= 12
+    && modelAsset.sizeBytes <= MAX_MODEL_BYTES;
+}
+
+async function saveProjectModel(projectDirectory, fileName, modelBytes) {
+  const bytes = Buffer.from(modelBytes);
+  if (
+    bytes.length < 12
+    || bytes.length > MAX_MODEL_BYTES
+    || bytes.toString('ascii', 0, 4) !== 'glTF'
+    || typeof fileName !== 'string'
+    || fileName.trim().length === 0
+  ) throw new Error('Invalid VRM model asset.');
 
   const projectPath = path.join(projectDirectory, 'project.json');
-  await writeJsonAtomically(projectPath, {
-    schemaVersion: 1,
-    title: draft.title,
-    language: 'ja',
-    request,
-    chapters: chapterReferences.map(({ id, path: relativePath }) => ({ id, path: relativePath })),
-  });
-  return projectPath;
+  const project = JSON.parse(await fs.readFile(projectPath, 'utf8'));
+  if (project?.schemaVersion !== 1 || !Array.isArray(project.chapters)) {
+    throw new Error('Invalid project manifest.');
+  }
+
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const relativePath = `assets/models/${sha256}.vrm`;
+  const modelPath = path.join(projectDirectory, ...relativePath.split('/'));
+  await fs.mkdir(path.dirname(modelPath), { recursive: true });
+  await writeBytesAtomically(modelPath, bytes);
+
+  const modelAsset = {
+    path: relativePath,
+    fileName: path.basename(fileName.trim()).slice(0, 255),
+    sha256,
+    sizeBytes: bytes.length,
+  };
+  await writeJsonAtomically(projectPath, { ...project, modelAsset });
+  return modelAsset;
 }
 
 async function loadScenarioProject(projectDirectory) {
+  const recoveredFromInterruptedSave = await recoverInterruptedProjectSave(projectDirectory);
   const projectPath = path.join(projectDirectory, 'project.json');
   const project = JSON.parse(await fs.readFile(projectPath, 'utf8'));
   if (
@@ -110,7 +277,36 @@ async function loadScenarioProject(projectDirectory) {
     chapters.push(chapter);
   }
 
-  return { project, request: project.request, draft: { title: project.title, chapters } };
+  let modelAsset;
+  let modelAssetMissing = false;
+  if (project.modelAsset !== undefined) {
+    if (!isValidProjectModelAsset(project.modelAsset)) {
+      modelAssetMissing = true;
+    } else {
+      const modelPath = path.join(projectDirectory, ...project.modelAsset.path.split('/'));
+      try {
+        const bytes = await fs.readFile(modelPath);
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        if (bytes.length !== project.modelAsset.sizeBytes || sha256 !== project.modelAsset.sha256) {
+          modelAssetMissing = true;
+        } else {
+          modelAsset = { fileName: project.modelAsset.fileName, bytes: new Uint8Array(bytes) };
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        modelAssetMissing = true;
+      }
+    }
+  }
+
+  return {
+    project,
+    request: project.request,
+    draft: { title: project.title, chapters },
+    recoveredFromInterruptedSave,
+    modelAsset,
+    modelAssetMissing,
+  };
 }
 
 async function resolveChapterScenario(projectDirectory, chapterIndex) {
@@ -170,4 +366,4 @@ async function loadChapterAudio(projectDirectory, chapterIndex) {
   return { audioAsset, audio: new Uint8Array(fileBytes) };
 }
 
-module.exports = { loadChapterAudio, loadScenarioProject, saveChapterAudio, saveScenarioProject };
+module.exports = { loadChapterAudio, loadScenarioProject, saveChapterAudio, saveProjectModel, saveScenarioProject };

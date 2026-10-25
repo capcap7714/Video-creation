@@ -48,12 +48,21 @@ declare global {
         path?: string;
         message: string;
       }>;
+      saveModel: (fileName: string, bytes: Uint8Array) => Promise<{
+        saved: boolean;
+        unavailable?: boolean;
+        modelAsset?: { fileName: string };
+        message?: string;
+      }>;
       open: () => Promise<{
         opened: boolean;
         cancelled?: boolean;
         message?: string;
         request?: ScenarioRequest;
         draft?: ScenarioDraft;
+        recoveredFromInterruptedSave?: boolean;
+        modelAsset?: { fileName: string; bytes: Uint8Array };
+        modelAssetMissing?: boolean;
       }>;
       exportSubtitles: (
         chapterIndex: number,
@@ -114,6 +123,7 @@ videoFrameCanvas.width = 1920;
 videoFrameCanvas.height = 1080;
 const videoFrameContext = videoFrameCanvas.getContext('2d')!;
 const fileInput = document.querySelector<HTMLInputElement>('#model-file')!;
+let activeModelFile: File | undefined;
 const motionInput = document.querySelector<HTMLInputElement>('#motion-file')!;
 const mouthTimelineInput = document.querySelector<HTMLInputElement>('#mouth-timeline-file')!;
 const timeline = document.querySelector<HTMLInputElement>('#timeline')!;
@@ -1965,17 +1975,28 @@ scenarioSaveButton.addEventListener('click', async () => {
   scenarioMessage.textContent = '保存先フォルダーを選択してください。';
   try {
     const result = await window.scenarioApi.save(requestResult.data, confirmedScenario);
+    let modelSaveMessage = '';
+    if (result.saved && activeModelFile) {
+      const modelResult = await persistModelFile(activeModelFile);
+      if (modelResult && !modelResult.saved) {
+        modelSaveMessage = ` ${modelResult.message ?? 'VRMモデルをプロジェクトへコピーできませんでした。'}`;
+        scenarioSaveStatus.textContent = 'VRMモデルを保存できませんでした';
+        scenarioSaveStatus.dataset.state = 'error';
+      }
+    }
     if (result.saved) {
       scenarioHasUnsavedChanges = false;
-      scenarioSaveStatus.textContent = '保存済み';
-      scenarioSaveStatus.dataset.state = 'saved';
+      if (!modelSaveMessage) {
+        scenarioSaveStatus.textContent = '保存済み';
+        scenarioSaveStatus.dataset.state = 'saved';
+      }
     } else {
       scenarioSaveStatus.textContent = result.message;
       scenarioSaveStatus.dataset.state = result.cancelled ? 'modified' : 'error';
     }
     scenarioMessage.textContent = result.saved && result.path
-      ? `${result.message} ${result.path}`
-      : result.message;
+      ? `${result.message} ${result.path}${modelSaveMessage}`
+      : `${result.message}${modelSaveMessage}`;
   } catch {
     scenarioMessage.textContent = '保存処理に失敗しました。確認済みの内容は保持されています。';
     scenarioSaveStatus.textContent = '保存に失敗しました';
@@ -1999,6 +2020,7 @@ scenarioOpenButton.addEventListener('click', async () => {
       scenarioMessage.textContent = result.message ?? 'プロジェクトを開けませんでした。';
       return;
     }
+    clearActiveModel();
 
     (document.querySelector<HTMLInputElement>('#scenario-title')!).value = result.request.title;
     (document.querySelector<HTMLTextAreaElement>('#scenario-overview')!).value = result.request.overview;
@@ -2014,7 +2036,23 @@ scenarioOpenButton.addEventListener('click', async () => {
     scenarioSaveStatus.dataset.state = 'saved';
     renderScenarioDraft(result.draft);
     scenarioReviewState.textContent = '再確認が必要';
-    scenarioMessage.textContent = 'プロジェクトを読み込みました。内容を確認し、必要なら編集してから確定してください。';
+    const loadedMessage = result.recoveredFromInterruptedSave
+      ? '保存中断を検出し、前回保存時点の内容へ復旧しました。内容を確認してから編集を続けてください。'
+      : 'プロジェクトを読み込みました。内容を確認し、必要なら編集してから確定してください。';
+    if (result.modelAsset) {
+      const restoredBytes = new ArrayBuffer(result.modelAsset.bytes.byteLength);
+      new Uint8Array(restoredBytes).set(result.modelAsset.bytes);
+      const restoredFile = new File([restoredBytes], result.modelAsset.fileName, { type: 'model/gltf-binary' });
+      const transfer = new DataTransfer();
+      transfer.items.add(restoredFile);
+      fileInput.files = transfer.files;
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+      scenarioMessage.textContent = loadedMessage;
+    } else if (result.modelAssetMissing) {
+      scenarioMessage.textContent = `${loadedMessage} 保存済みVRMが見つからないか破損しています。モデルを選び直してください。`;
+    } else {
+      scenarioMessage.textContent = `${loadedMessage} VRMモデルは未保存です。読み込むとプロジェクト内へコピーされます。`;
+    }
     scenarioGenerateButton.textContent = '再生成';
     scenarioSaveButton.disabled = true;
   } catch {
@@ -2058,6 +2096,30 @@ let activeMixer: THREE.AnimationMixer | undefined;
 let activeMouthTimeline: MouthShape[] = [];
 const previousCharacterActionOffset = new THREE.Euler();
 let previousCharacterHappyValue: number | null = null;
+
+function clearActiveModel() {
+  activeMixer?.stopAllAction();
+  activeMixer = undefined;
+  if (activeVrm) scene.remove(activeVrm.scene);
+  activeVrm = undefined;
+  activeModelFile = undefined;
+  fileInput.value = '';
+  motionInput.value = '';
+  motionInput.disabled = true;
+  mouthTimelineInput.value = '';
+  mouthTimelineInput.disabled = true;
+  activeMouthTimeline = [];
+  captureButton.disabled = true;
+  sequenceButton.disabled = true;
+  benchmarkButton.disabled = true;
+  videoExportButton.disabled = true;
+  emptyState.hidden = false;
+  runtimeStatus.textContent = 'モデル未読込';
+  runtimeStatus.dataset.state = '';
+  modelReadout.textContent = 'モデル: --';
+  mouthReadout.textContent = '口形: --';
+  renderAt(Number(timeline.value));
+}
 
 function getCharacterActionAt(seconds: number) {
   const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
@@ -2137,6 +2199,15 @@ function setResult(message: string) {
   resultReadout.textContent = message;
 }
 
+async function persistModelFile(file: File, contents?: ArrayBuffer) {
+  if (!window.scenarioApi) return undefined;
+  try {
+    return await window.scenarioApi.saveModel(file.name, new Uint8Array(contents ?? await file.arrayBuffer()));
+  } catch {
+    return { saved: false, message: 'VRMモデルをプロジェクトへコピーできませんでした。' };
+  }
+}
+
 async function hashNarrationText(text: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
@@ -2172,6 +2243,7 @@ fileInput.addEventListener('change', async () => {
     previousCharacterHappyValue = null;
     if (activeVrm) scene.remove(activeVrm.scene);
     activeVrm = loadedVrm;
+    activeModelFile = file;
     scene.add(activeVrm.scene);
     motionInput.disabled = false;
     motionInput.value = '';
@@ -2201,7 +2273,11 @@ fileInput.addEventListener('change', async () => {
     modelReadout.textContent = `モデル: ${file.name} / ${Math.round(size.x * 100) / 100} × ${Math.round(size.y * 100) / 100} × ${Math.round(size.z * 100) / 100}`;
     renderAt(Number(timeline.value));
     const expressions = activeVrm.expressionManager?.expressions.map((expression) => expression.expressionName) ?? [];
-    setResult(expressions.length > 0 ? `利用可能な表情: ${expressions.join(', ')}` : 'このモデルに表情プリセットはありません。');
+    const modelMessage = expressions.length > 0 ? `利用可能な表情: ${expressions.join(', ')}` : 'このモデルに表情プリセットはありません。';
+    const savedModel = await persistModelFile(file, buffer);
+    if (savedModel?.saved) setResult(`${modelMessage} VRMモデルをプロジェクトにコピーしました。`);
+    else if (savedModel && !savedModel.unavailable) setResult(`${modelMessage} ${savedModel.message ?? ''}`);
+    else setResult(modelMessage);
   } catch (error) {
     runtimeStatus.textContent = '読み込み失敗';
     runtimeStatus.dataset.state = 'error';

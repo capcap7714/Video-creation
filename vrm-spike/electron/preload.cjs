@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('scenarioApi', Object.freeze({
   generate: (input, previousDraft) => ipcRenderer.invoke('scenario:generate', { input, previousDraft }),
   save: (request, draft) => ipcRenderer.invoke('scenario:save', { request, draft }),
   autoSave: (request, draft) => ipcRenderer.invoke('scenario:auto-save', { request, draft }),
+  saveModel: (fileName, bytes) => ipcRenderer.invoke('scenario:save-model', { fileName, bytes }),
   open: () => ipcRenderer.invoke('scenario:open'),
   exportSubtitles: (chapterIndex, subtitles) => ipcRenderer.invoke('subtitle:export-srt', { chapterIndex, subtitles }),
 }));

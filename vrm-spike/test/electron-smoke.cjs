@@ -6,9 +6,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { _electron: electron } = require('playwright');
 const withScenarioGeneration = process.argv.includes('--with-scenario-generation');
+const withScenarioReviewFixture = process.argv.includes('--with-scenario-review-fixture');
+const withNewProjectFlowFixture = process.argv.includes('--with-new-project-flow-fixture');
 const withAiProviderSettings = process.argv.includes('--with-ai-provider-settings');
 const withProjectFixture = process.argv.includes('--with-project-fixture');
 const withProjectOpenFixture = process.argv.includes('--with-project-open-fixture');
+const withProjectModelAssetFixture = process.argv.includes('--with-project-model-asset-fixture');
+const withProjectRecoveryFixture = process.argv.includes('--with-project-recovery-fixture');
+const withProjectRecoveryFailureFixture = process.argv.includes('--with-project-recovery-failure-fixture');
 const withCorruptProjectFixture = process.argv.includes('--with-corrupt-project-fixture');
 const withAutosaveFixture = process.argv.includes('--with-autosave-fixture');
 const withFailureFixture = process.argv.includes('--with-failure-fixture');
@@ -20,6 +25,7 @@ const withCStopFixture = process.argv.includes('--with-c-stop-fixture');
 const withVoicevoxFixture = process.argv.includes('--with-voicevox-fixture');
 const withVoicevoxOfflineFixture = process.argv.includes('--with-voicevox-offline-fixture');
 const withVoicevoxEmptySpeakersFixture = process.argv.includes('--with-voicevox-empty-speakers-fixture');
+const withVoicevoxHttpErrorFixture = process.argv.includes('--with-voicevox-http-error-fixture');
 const withAudioReplacementFixture = process.argv.includes('--with-audio-replacement-fixture');
 const withFfmpegMissingFixture = process.argv.includes('--with-ffmpeg-missing-fixture');
 const withFfmpegAvailableFixture = process.argv.includes('--with-ffmpeg-available-fixture');
@@ -103,9 +109,34 @@ async function main() {
   let aiProviderToRestore;
 
   try {
-    if (withProjectFixture || withProjectOpenFixture || withCorruptProjectFixture || withAutosaveFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
+    if (withScenarioReviewFixture || withNewProjectFlowFixture || withProjectFixture || withProjectOpenFixture || withProjectModelAssetFixture || withProjectRecoveryFixture || withProjectRecoveryFailureFixture || withCorruptProjectFixture || withAutosaveFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
       projectDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'c-video-project-ui-'));
-      await projectStore.saveScenarioProject(projectDirectory, fixtureRequest, fixtureDraft);
+      if (!withNewProjectFlowFixture) await projectStore.saveScenarioProject(projectDirectory, fixtureRequest, fixtureDraft);
+      if (withAudioReplacementFixture) {
+        const audioReplacementDraft = structuredClone(fixtureDraft);
+        audioReplacementDraft.chapters[0].runCode = false;
+        await projectStore.saveScenarioProject(projectDirectory, fixtureRequest, audioReplacementDraft);
+      }
+      if (withProjectRecoveryFailureFixture) {
+        await fs.writeFile(path.join(projectDirectory, '.project-save-recovery.json'), '{ invalid recovery journal', 'utf8');
+      }
+      if (withProjectRecoveryFixture) {
+        const projectPath = path.join(projectDirectory, 'project.json');
+        const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
+        const snapshots = await Promise.all([projectPath, chapterPath].map(async (filePath) => ({
+          path: path.relative(projectDirectory, filePath).split(path.sep).join('/'),
+          existed: true,
+          contents: (await fs.readFile(filePath)).toString('base64'),
+        })));
+        await fs.writeFile(
+          path.join(projectDirectory, '.project-save-recovery.json'),
+          JSON.stringify({ schemaVersion: 1, files: snapshots }),
+          'utf8',
+        );
+        const interruptedChapter = JSON.parse(await fs.readFile(chapterPath, 'utf8'));
+        interruptedChapter.narration = '保存中断で残った不整合データ';
+        await fs.writeFile(chapterPath, JSON.stringify(interruptedChapter), 'utf8');
+      }
     }
     viteServer = await startViteServer();
     app = await electron.launch({
@@ -114,9 +145,10 @@ async function main() {
       env: {
         ...process.env,
         CVIDEO_DEV_URL: `${viteServer.url}/?cvideo_test_frame=1`,
-        ...(withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withVoicevoxOfflineFixture || withVoicevoxEmptySpeakersFixture || withAudioReplacementFixture || withFfmpegMissingFixture || withFfmpegAvailableFixture || withMissingSubtitleFixture
+        ...(withScenarioReviewFixture || withNewProjectFlowFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withVoicevoxOfflineFixture || withVoicevoxEmptySpeakersFixture || withVoicevoxHttpErrorFixture || withAudioReplacementFixture || withFfmpegMissingFixture || withFfmpegAvailableFixture || withMissingSubtitleFixture
           ? {
           NODE_ENV: 'test',
+          CVIDEO_TEST_SCENARIO_SUCCESS: withScenarioReviewFixture || withNewProjectFlowFixture ? '1' : '0',
           CVIDEO_TEST_SCENARIO_FAILURE: withRateLimitFixture ? 'rate-limit' : withFailureFixture ? 'network' : '',
           CVIDEO_TEST_GCC_MISSING: withCRunnerFixture ? '1' : '0',
           CVIDEO_TEST_C_RUNNER_MODE: withCErrorFixture ? 'compile-error' : withCStopFixture ? 'hang' : withCResultFixture ? 'result' : '',
@@ -124,6 +156,8 @@ async function main() {
             ? 'offline'
             : withVoicevoxEmptySpeakersFixture
               ? 'empty-speakers'
+              : withVoicevoxHttpErrorFixture
+                ? 'http-error'
               : withVoicevoxFixture || withAudioReplacementFixture || withMissingSubtitleFixture ? 'speakers' : '',
           ...(withFfmpegMissingFixture ? { CVIDEO_FFMPEG_PATH: path.join(os.tmpdir(), 'cvideo-test-missing-ffmpeg.exe') } : {}),
           }
@@ -172,6 +206,106 @@ async function main() {
     }
     assert.equal(initialScenarioTitle, 'C言語の変数入門');
     console.log('Scenario preload and input-validation IPC passed');
+
+    if (withScenarioReviewFixture) {
+      aiProviderToRestore = (await window.evaluate(() => window.scenarioApi.getAiProvider())).provider;
+      await window.waitForFunction(() => !document.querySelector('#scenario-ai-provider').disabled);
+      if (aiProviderToRestore !== 'copilot') {
+        await window.locator('#scenario-ai-provider').selectOption('copilot');
+        await window.getByText('Copilot SDKでシナリオを生成します。', { exact: true }).waitFor();
+      }
+      await app.evaluate(({ dialog }, selectedPath) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
+      }, projectDirectory);
+      await window.locator('#scenario-open-button').click();
+      await window.getByText('再確認が必要', { exact: true }).waitFor({ timeout: 30_000 });
+      const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
+      const originalChapter = await fs.readFile(chapterPath);
+      await window.locator('#scenario-generate-button').click();
+      await window.getByText('確認待ち', { exact: true }).waitFor({ timeout: 30_000 });
+      assert.equal(await window.locator('#scenario-save-button').isDisabled(), true);
+      assert.equal(await window.locator('#scenario-confirm-button').isEnabled(), true);
+      assert.deepEqual(await fs.readFile(chapterPath), originalChapter, 'unconfirmed generation must not overwrite the saved chapter');
+      assert.equal(await window.locator('#scenario-review-state').innerText(), '確認待ち');
+      await window.locator('#scenario-confirm-button').click();
+      assert.equal(await window.locator('#scenario-save-button').isEnabled(), true);
+      assert.deepEqual(await fs.readFile(chapterPath), originalChapter, 'confirmation alone must not overwrite files before explicit save');
+      console.log('Generated scenarios remained unconfirmed without overwriting saved files; confirmation enabled explicit save');
+      return;
+    }
+
+    if (withNewProjectFlowFixture) {
+      aiProviderToRestore = (await window.evaluate(() => window.scenarioApi.getAiProvider())).provider;
+      await window.waitForFunction(() => !document.querySelector('#scenario-ai-provider').disabled);
+      if (aiProviderToRestore !== 'copilot') {
+        await window.locator('#scenario-ai-provider').selectOption('copilot');
+      }
+      const request = {
+        title: '新規Cプロジェクト通し確認',
+        overview: '新規作成、明示確認、保存、再起動後の復元を検証します。',
+        audience: 'C言語初学者',
+        chapterCount: 1,
+        targetMinutes: 3,
+      };
+      await window.locator('#scenario-title').fill(request.title);
+      await window.locator('#scenario-overview').fill(request.overview);
+      await window.locator('#scenario-audience').fill(request.audience);
+      await window.locator('#scenario-chapter-count').fill(String(request.chapterCount));
+      await window.locator('#scenario-target-minutes').fill(String(request.targetMinutes));
+      await window.locator('#scenario-generate-button').click();
+      await window.getByText('確認待ち', { exact: true }).waitFor({ timeout: 30_000 });
+      assert.equal(await window.locator('#scenario-editor fieldset').count(), 1);
+      assert.equal(await window.locator('#scenario-save-button').isDisabled(), true);
+      await window.locator('#chapter-add-button').click();
+      assert.deepEqual(await window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value)), [
+        '未確認の章', '新しい章',
+      ]);
+      await window.evaluate(() => { window.confirm = () => false; });
+      await window.locator('[data-chapter-action="remove"]').nth(1).click();
+      assert.equal(await window.locator('.chapter-title').count(), 2, 'declining chapter deletion should preserve the new chapter');
+      await window.locator('[data-chapter-action="move-up"]').nth(1).click();
+      assert.deepEqual(await window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value)), [
+        '新しい章', '未確認の章',
+      ]);
+      await window.evaluate(() => { window.confirm = () => true; });
+      await window.locator('[data-chapter-action="remove"]').first().click();
+      assert.deepEqual(await window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value)), [
+        '未確認の章',
+      ]);
+      await window.locator('#scenario-confirm-button').click();
+      assert.equal(await window.locator('#scenario-save-button').isEnabled(), true);
+      assert.match(await window.locator('#scenario-message').innerText(), /プロジェクト保存はまだ行われていません/u);
+      await app.evaluate(({ dialog }, selectedPath) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
+      }, projectDirectory);
+      await window.locator('#scenario-save-button').click();
+      await window.getByText(/プロジェクトを保存しました/u).waitFor({ timeout: 30_000 });
+      const savedProject = JSON.parse(await fs.readFile(path.join(projectDirectory, 'project.json'), 'utf8'));
+      const savedChapter = JSON.parse(await fs.readFile(path.join(projectDirectory, 'chapters', '01', 'scenario.json'), 'utf8'));
+      assert.deepEqual(savedProject.request, request);
+      assert.equal(savedChapter.title, '未確認の章');
+      assert.equal(savedChapter.narration, 'この内容はユーザー確認前の一時的な生成案です。');
+
+      await app.close();
+      app = await electron.launch({
+        executablePath: require('electron'),
+        args: [path.resolve(__dirname, '../electron/main.cjs')],
+        env: { ...process.env, CVIDEO_DEV_URL: `${viteServer.url}/?cvideo_test_frame=1` },
+      });
+      window = await app.firstWindow();
+      await window.waitForLoadState('load');
+      await app.evaluate(({ dialog }, selectedPath) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
+      }, projectDirectory);
+      await window.locator('#scenario-open-button').click();
+      await window.getByText('再確認が必要', { exact: true }).waitFor({ timeout: 30_000 });
+      assert.equal(await window.locator('#scenario-title').inputValue(), request.title);
+      assert.equal(await window.locator('.chapter-title').first().inputValue(), '未確認の章');
+      assert.equal(await window.locator('.chapter-narration').inputValue(), savedChapter.narration);
+      assert.equal(await window.locator('#scenario-save-button').isDisabled(), true);
+      console.log('New project generation, user confirmation, save, restart, and review-before-edit flow passed');
+      return;
+    }
 
     if (withAiProviderSettings) {
       await window.waitForFunction(() => !document.querySelector('#scenario-ai-provider').disabled);
@@ -229,13 +363,15 @@ async function main() {
       return;
     }
 
-    if (withVoicevoxOfflineFixture || withVoicevoxEmptySpeakersFixture) {
+    if (withVoicevoxOfflineFixture || withVoicevoxEmptySpeakersFixture || withVoicevoxHttpErrorFixture) {
       await window.locator('#voicevox-connect-button').click();
       const expectedStatus = withVoicevoxOfflineFixture
         ? 'VOICEVOX Engineに接続できません。Engineを起動してから再試行してください。'
-        : 'VOICEVOX Engineには接続しましたが、有効な話者スタイルがありません。Engineの話者設定を確認して再試行してください。';
+        : withVoicevoxEmptySpeakersFixture
+          ? 'VOICEVOX Engineには接続しましたが、有効な話者スタイルがありません。Engineの話者設定を確認して再試行してください。'
+          : 'VOICEVOX Engineの応答を確認できません。Engineの状態を確認してください。';
       await window.getByText(expectedStatus, { exact: true }).waitFor({ timeout: 15_000 });
-      assert.equal(await window.locator('#voicevox-status').getAttribute('data-state'), withVoicevoxOfflineFixture ? 'error' : 'warning');
+      assert.equal(await window.locator('#voicevox-status').getAttribute('data-state'), withVoicevoxEmptySpeakersFixture ? 'warning' : 'error');
       assert.equal(await window.locator('#voicevox-style').isDisabled(), true);
       assert.equal(await window.locator('#voicevox-generate-button').isDisabled(), true);
       assert.equal(await window.locator('#voicevox-connect-button').isEnabled(), true, 'retry should remain available');
@@ -243,7 +379,9 @@ async function main() {
       await window.getByText(expectedStatus, { exact: true }).waitFor({ timeout: 15_000 });
       console.log(withVoicevoxOfflineFixture
         ? 'VOICEVOX unavailable state explains how to start/retry the Engine'
-        : 'VOICEVOX empty speaker list is distinct from connection failure and supports retry');
+        : withVoicevoxEmptySpeakersFixture
+          ? 'VOICEVOX empty speaker list is distinct from connection failure and supports retry'
+          : 'VOICEVOX HTTP error shows actionable guidance and keeps retry available');
       return;
     }
 
@@ -397,7 +535,7 @@ async function main() {
       console.log('Scenario generation, manual edit, and review confirmation passed');
     }
 
-    if (withProjectFixture || withProjectOpenFixture || withCorruptProjectFixture || withAutosaveFixture || withAudioReplacementFixture || withMissingSubtitleFixture) {
+    if (withProjectFixture || withProjectOpenFixture || withProjectModelAssetFixture || withProjectRecoveryFixture || withProjectRecoveryFailureFixture || withCorruptProjectFixture || withAutosaveFixture || withAudioReplacementFixture || withMissingSubtitleFixture) {
       console.log('Preparing project dialog fixture');
       const dialogsPatched = await app.evaluate(({ dialog }, selectedPath) => {
         const showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
@@ -436,8 +574,28 @@ async function main() {
       await window.waitForFunction(() => {
         const reviewState = document.querySelector('#scenario-review-state')?.textContent;
         const message = document.querySelector('#scenario-message')?.textContent ?? '';
-        return reviewState === '再確認が必要' || message.includes('プロジェクトを開けません');
+        return reviewState === '再確認が必要'
+          || message.includes('プロジェクトを開けません')
+          || message.includes('保存中断から復旧できませんでした');
       }, null, { timeout: 30000 });
+      if (withProjectRecoveryFailureFixture) {
+        await window.getByText(
+          '保存中断から復旧できませんでした。プロジェクトフォルダー内のファイルを削除せず、管理者に確認してください。',
+          { exact: true },
+        ).waitFor({ timeout: 15_000 });
+        assert.equal(await window.locator('#scenario-title').inputValue(), 'C言語の変数入門');
+        assert.equal(await window.locator('#scenario-editor fieldset').count(), 0);
+        assert.equal(
+          JSON.parse(await fs.readFile(path.join(projectDirectory, 'chapters', '01', 'scenario.json'), 'utf8')).narration,
+          fixtureDraft.chapters[0].narration,
+        );
+        assert.equal(
+          await fs.readFile(path.join(projectDirectory, '.project-save-recovery.json'), 'utf8'),
+          '{ invalid recovery journal',
+        );
+        console.log('Invalid recovery journal was preserved and the UI advised keeping project files');
+        return;
+      }
       assert.equal(
         await window.locator('#scenario-review-state').innerText(),
         '再確認が必要',
@@ -445,6 +603,45 @@ async function main() {
       );
       assert.equal(await window.locator('#scenario-title').inputValue(), fixtureDraft.title);
       assert.equal(await window.locator('#scenario-editor fieldset').count(), 1);
+      if (withProjectModelAssetFixture) {
+        const sourceModelPath = path.resolve(__dirname, '../../C1.vrm');
+        await window.locator('#model-file').setInputFiles(sourceModelPath);
+        await window.getByText(/VRMモデルをプロジェクトにコピーしました/u).waitFor({ timeout: 30_000 });
+        let project = JSON.parse(await fs.readFile(path.join(projectDirectory, 'project.json'), 'utf8'));
+        assert.equal(project.modelAsset.fileName, 'C1.vrm');
+        const copiedModelPath = path.join(projectDirectory, ...project.modelAsset.path.split('/'));
+        assert.deepEqual(await fs.readFile(copiedModelPath), await fs.readFile(sourceModelPath));
+
+        await window.locator('#scenario-open-button').click();
+        await window.waitForFunction(
+          () => document.querySelector('#runtime-status')?.textContent === 'VRM 1.0読込完了',
+          null,
+          { timeout: 30_000 },
+        );
+        assert.match(await window.locator('#model-readout').innerText(), /C1\.vrm/u);
+
+        await fs.rm(copiedModelPath);
+        await window.locator('#scenario-open-button').click();
+        await window.getByText(/保存済みVRMが見つからないか破損しています/u).waitFor({ timeout: 15_000 });
+        assert.equal(await window.locator('#runtime-status').innerText(), 'モデル未読込');
+        assert.equal(await window.locator('#video-export-button').isDisabled(), true);
+        project = JSON.parse(await fs.readFile(path.join(projectDirectory, 'project.json'), 'utf8'));
+        assert.equal(project.modelAsset.fileName, 'C1.vrm', 'the missing model reference should remain available for repair');
+        console.log('VRM was copied into the project, restored on open, and missing assets blocked export with a repair warning');
+        return;
+      }
+      if (withProjectRecoveryFixture) {
+        assert.match(
+          await window.locator('#scenario-message').innerText(),
+          /保存中断を検出し、前回保存時点の内容へ復旧しました/u,
+        );
+        assert.equal(
+          JSON.parse(await fs.readFile(path.join(projectDirectory, 'chapters', '01', 'scenario.json'), 'utf8')).narration,
+          fixtureDraft.chapters[0].narration,
+        );
+        console.log('Interrupted project save was recovered on open and explained in the UI');
+        return;
+      }
       if (withProjectOpenFixture) {
         assert.equal(await window.locator('#scenario-confirm-button').isEnabled(), true);
         assert.equal(await window.locator('#scenario-save-button').isDisabled(), true);
@@ -488,10 +685,8 @@ async function main() {
         assert.match(await window.locator('.chapter-audio').getAttribute('src'), /^blob:/);
         assert.equal(await window.locator('.subtitle-row').count(), 2);
         assert.equal(await window.locator('.subtitle-text').first().inputValue(), '変数は値を保存する名前付きの場所です。');
-        if (!withAudioReplacementFixture) {
-          await window.waitForFunction(() => Number.isFinite(document.querySelector('.chapter-audio')?.duration)
-            && document.querySelector('.chapter-audio').duration > 0, null, { timeout: 30000 });
-        }
+        await window.waitForFunction(() => Number.isFinite(document.querySelector('.chapter-audio')?.duration)
+          && document.querySelector('.chapter-audio').duration > 0, null, { timeout: 30000 });
         if (withAudioReplacementFixture) {
           const audioPath = path.join(projectDirectory, 'chapters', '01', 'audio', 'narration.wav');
           const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
@@ -517,6 +712,26 @@ async function main() {
           await window.getByText('字幕タイミング: 要確認（読み上げ本文が変更されています）', { exact: true }).waitFor();
           assert.match(await window.locator('.chapter-material-status').first().innerText(), /音声: 要更新/);
           assert.match(await window.locator('.chapter-material-status').first().innerText(), /動画: 要更新/);
+          await window.locator('#scenario-confirm-button').click();
+          await window.locator('#scenario-save-button').click();
+          await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30000 });
+          assert.deepEqual(await fs.readFile(audioPath), previousAudio, 'saving narration edits should not replace the old WAV');
+          assert.equal(JSON.parse(await fs.readFile(chapterPath, 'utf8')).subtitleNarrationHash, previousAudioAsset.narrationHash);
+          await window.locator('#model-file').setInputFiles(path.resolve(__dirname, '../../C1.vrm'));
+          await window.waitForFunction(() => document.querySelector('#runtime-status')?.textContent === 'VRM 1.0読込完了');
+          assert.equal(await window.locator('#video-export-button').isEnabled(), true);
+          await window.evaluate(() => { window.confirm = () => true; });
+          await window.locator('#video-export-button').click();
+          assert.equal(
+            await window.locator('#video-export-status').innerText(),
+            '読み上げ本文が変更されています。音声を再生成してください。',
+          );
+          assert.equal(
+            await window.locator('.chapter-audio-generate').evaluate((button) => button === document.activeElement),
+            true,
+            'stale narration export should focus the audio regeneration button',
+          );
+          assert.deepEqual(await fs.readFile(audioPath), previousAudio, 'stale narration audio should block export without changing the WAV');
           await window.evaluate(() => {
             window.__audioReplacementPrompts = [];
             window.confirm = (message) => {
@@ -527,17 +742,12 @@ async function main() {
           await window.locator('.chapter-audio-generate').click();
           await window.getByText('音声の再生成をキャンセルしました。保存済み音声は保持されています。', { exact: true }).waitFor();
           assert.deepEqual(await fs.readFile(audioPath), previousAudio, 'declining audio replacement should preserve the previous WAV');
-          assert.deepEqual(JSON.parse(await fs.readFile(chapterPath, 'utf8')).audioAsset, previousAudioAsset);
+          assert.equal(JSON.parse(await fs.readFile(chapterPath, 'utf8')).audioAsset, null, 'stale audio metadata should stay invalidated after narration is saved');
           assert.match(await window.locator('.chapter-material-status').first().innerText(), /音声: 要更新/);
           assert.deepEqual(await window.evaluate(() => window.__audioReplacementPrompts), [
             '保存済み音声を新しい音声で置き換えますか？',
           ]);
 
-          await window.locator('#scenario-confirm-button').click();
-          await window.locator('#scenario-save-button').click();
-          await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30000 });
-          assert.deepEqual(await fs.readFile(audioPath), previousAudio, 'saving narration edits should not replace the old WAV');
-          assert.equal(JSON.parse(await fs.readFile(chapterPath, 'utf8')).subtitleNarrationHash, previousAudioAsset.narrationHash);
           await window.evaluate(() => {
             window.__audioReplacementPrompts = [];
             window.confirm = (message) => {
@@ -707,6 +917,21 @@ async function main() {
       await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30000 });
       const savedProject = JSON.parse(await fs.readFile(path.join(projectDirectory, 'project.json'), 'utf8'));
       assert.equal(savedProject.title, fixtureDraft.title);
+      if (withProjectFixture && !withAudioReplacementFixture) {
+        assert.deepEqual(savedProject.request, fixtureRequest);
+        const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
+        const savedChapter = JSON.parse(await fs.readFile(chapterPath, 'utf8'));
+        assert.equal(savedChapter.narration, fixtureDraft.chapters[0].narration);
+        assert.equal(savedChapter.codeExample, fixtureDraft.chapters[0].codeExample);
+        assert.equal(savedChapter.runInput, fixtureDraft.chapters[0].runInput);
+        assert.equal(savedChapter.runCode, fixtureDraft.chapters[0].runCode);
+        assert.equal(savedChapter.codeDisplayMode, fixtureDraft.chapters[0].codeDisplayMode);
+        assert.deepEqual(savedChapter.codeStages, fixtureDraft.chapters[0].codeStages);
+        assert.equal(savedChapter.subtitles.length, 2);
+        assert.equal(typeof savedChapter.audioAsset?.speakerName, 'string');
+        assert.ok(Number.isSafeInteger(savedChapter.audioAsset?.styleId));
+        assert.ok(savedChapter.audioAsset?.durationSeconds > 0);
+      }
       if (withLiveVoicevox) {
         const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
         const savedChapter = JSON.parse(await fs.readFile(chapterPath, 'utf8'));
@@ -739,6 +964,24 @@ async function main() {
       await restartedWindow.getByText('再確認が必要', { exact: true }).waitFor({ timeout: 30000 });
       assert.equal(await restartedWindow.locator('#scenario-title').inputValue(), fixtureDraft.title);
       assert.equal(await restartedWindow.locator('#scenario-editor fieldset').count(), 1);
+      if (withProjectFixture && !withAudioReplacementFixture) {
+        const savedChapter = JSON.parse(await fs.readFile(
+          path.join(projectDirectory, 'chapters', '01', 'scenario.json'),
+          'utf8',
+        ));
+        assert.equal(await restartedWindow.locator('.chapter-narration').inputValue(), savedChapter.narration);
+        assert.equal(await restartedWindow.locator('.chapter-code').inputValue(), savedChapter.codeExample);
+        assert.equal(await restartedWindow.locator('.c-run-input').inputValue(), savedChapter.runInput);
+        assert.deepEqual(await restartedWindow.locator('.code-stage-row').evaluateAll((rows) => rows.map((row) => ({
+          atSeconds: Number(row.querySelector('.code-stage-time').value),
+          visibleLines: Number(row.querySelector('.code-stage-lines').value),
+        }))), savedChapter.codeStages);
+        assert.deepEqual(await restartedWindow.locator('.subtitle-row').evaluateAll((rows) => rows.map((row) => ({
+          startSeconds: Number(row.querySelector('.subtitle-start').value),
+          endSeconds: Number(row.querySelector('.subtitle-end').value),
+          text: row.querySelector('.subtitle-text').value,
+        }))), savedChapter.subtitles);
+      }
       assert.equal(await restartedWindow.locator('#scenario-editor .code-editor:not(.chapter-code)').inputValue(), '80\n');
       assert.equal(await restartedWindow.locator('.code-display-mode:checked').inputValue(), 'staged');
       assert.equal(await restartedWindow.locator('.code-stage-row').count(), 2);

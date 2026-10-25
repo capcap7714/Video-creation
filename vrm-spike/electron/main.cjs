@@ -2,7 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { loadChapterAudio, loadScenarioProject, saveChapterAudio, saveScenarioProject } = require('./project-store.cjs');
+const { loadChapterAudio, loadScenarioProject, saveChapterAudio, saveProjectModel, saveScenarioProject } = require('./project-store.cjs');
 const { findGcc, runCProgram } = require('./c-runner.cjs');
 const { checkFfmpeg } = require('./ffmpeg-service.cjs');
 const { formatSrt } = require('./subtitle-export.cjs');
@@ -99,6 +99,13 @@ ipcMain.handle('voicevox:list-speakers', async () => {
   }
   if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VOICEVOX_MODE === 'empty-speakers') {
     return { connected: true, speakers: [] };
+  }
+  if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VOICEVOX_MODE === 'http-error') {
+    return {
+      connected: false,
+      speakers: [],
+      message: 'VOICEVOX Engineの応答を確認できません。Engineの状態を確認してください。',
+    };
   }
   if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VOICEVOX_MODE === 'speakers') {
     return {
@@ -582,6 +589,27 @@ ipcMain.handle('scenario:generate', async (_event, payload = {}) => {
       };
       return await generateScenarioDraftSafely(failingClient, input, previousDraft ?? null);
     }
+    if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_SCENARIO_SUCCESS === '1') {
+      const { ScenarioDraftSchema } = await import('../src/scenario.ts');
+      const generatedDraft = ScenarioDraftSchema.parse({
+        title: input.title,
+        chapters: [{
+          title: '未確認の章',
+          learningObjective: '確認前には既存内容を上書きしない。',
+          targetMinutes: input.targetMinutes,
+          narration: 'この内容はユーザー確認前の一時的な生成案です。',
+          codeExample: null,
+          runCode: false,
+        }],
+      });
+      const testClient = {
+        createSession: async () => ({
+          sendAndWait: async () => generatedDraft,
+          disconnect: async () => {},
+        }),
+      };
+      return await generateScenarioDraftSafely(testClient, input, previousDraft ?? null);
+    }
 
     const { CopilotClient } = await import('@github/copilot-sdk');
     client = new CopilotClient({ mode: 'copilot-cli', logLevel: 'error' });
@@ -705,6 +733,23 @@ ipcMain.handle('scenario:auto-save', async (event, payload = {}) => {
   }
 });
 
+ipcMain.handle('scenario:save-model', async (event, payload = {}) => {
+  const projectDirectory = activeProjectDirectories.get(event.sender.id);
+  if (!projectDirectory) {
+    return { saved: false, unavailable: true, message: '先にプロジェクトを保存または開いてください。' };
+  }
+  if (!(payload.bytes instanceof Uint8Array) || typeof payload.fileName !== 'string') {
+    return { saved: false, message: 'VRMモデルを確認してください。' };
+  }
+
+  try {
+    const modelAsset = await saveProjectModel(projectDirectory, payload.fileName, payload.bytes);
+    return { saved: true, modelAsset: { fileName: modelAsset.fileName } };
+  } catch {
+    return { saved: false, message: 'VRMモデルをプロジェクトへコピーできませんでした。保存先の空き容量と権限を確認してください。' };
+  }
+});
+
 ipcMain.handle('scenario:open', async (event) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   const selected = await dialog.showOpenDialog(owner, {
@@ -724,8 +769,21 @@ ipcMain.handle('scenario:open', async (event) => {
       return { opened: false, message: 'プロジェクトの内容が現在のシナリオ形式に合いません。' };
     }
     activeProjectDirectories.set(event.sender.id, selected.filePaths[0]);
-    return { opened: true, request: requestResult.data, draft: draftResult.data };
-  } catch {
+    return {
+      opened: true,
+      request: requestResult.data,
+      draft: draftResult.data,
+      recoveredFromInterruptedSave: stored.recoveredFromInterruptedSave,
+      modelAsset: stored.modelAsset,
+      modelAssetMissing: stored.modelAssetMissing,
+    };
+  } catch (error) {
+    if (['PROJECT_SAVE_RECOVERY_INVALID', 'PROJECT_SAVE_RECOVERY_FAILED'].includes(error.code)) {
+      return {
+        opened: false,
+        message: '保存中断から復旧できませんでした。プロジェクトフォルダー内のファイルを削除せず、管理者に確認してください。',
+      };
+    }
     return {
       opened: false,
       message: 'プロジェクトを読み込めません。project.jsonと章ファイルの形式、読み取り権限を確認してください。',

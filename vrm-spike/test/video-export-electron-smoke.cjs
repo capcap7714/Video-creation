@@ -401,6 +401,19 @@ async function main() {
         assert.ok(Math.abs(srtTimeToSeconds(cue[2]) - expectedCue.endSeconds) <= 0.001, `encoded SRT cue ${index + 1} end time should match the timeline`);
         assert.equal(cue[3].trim(), expectedCue.text, `encoded SRT cue ${index + 1} should match the generated subtitle`);
       }
+      const extractedSubtitles = spawnSync(dependency.path, [
+        '-hide_banner', '-i', outputPath, '-map', '0:s:0', '-c:s', 'srt', '-f', 'srt', 'pipe:1',
+      ], { encoding: 'utf8', timeout: 120_000, windowsHide: true });
+      assert.equal(extractedSubtitles.status, 0, `FFmpeg could not extract the embedded MP4 subtitle track: ${extractedSubtitles.stderr}`);
+      const embeddedCues = [...extractedSubtitles.stdout.matchAll(/^(\d+)\r?\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\r?\n([\s\S]*?)(?=\r?\n\r?\n|$)/gm)];
+      assert.equal(embeddedCues.length, encodedCues.length, 'embedded MP4 subtitle cue count should match the SRT file');
+      for (const [index, cue] of embeddedCues.entries()) {
+        const srtCue = encodedCues[index];
+        assert.equal(Number(cue[1]), index + 1, `embedded MP4 subtitle cue ${index + 1} should retain sequential numbering`);
+        assert.ok(Math.abs(srtTimeToSeconds(cue[2]) - srtTimeToSeconds(srtCue[1])) <= 0.001, `embedded MP4 subtitle cue ${index + 1} start should match SRT`);
+        assert.ok(Math.abs(srtTimeToSeconds(cue[3]) - srtTimeToSeconds(srtCue[2])) <= 0.001, `embedded MP4 subtitle cue ${index + 1} end should match SRT`);
+        assert.equal(cue[4].trim(), srtCue[3].trim(), `embedded MP4 subtitle cue ${index + 1} text should match SRT`);
+      }
       const fullDecode = spawnSync(dependency.path, ['-hide_banner', '-i', outputPath, '-f', 'null', '-'], {
         encoding: 'utf8', timeout: 120_000, windowsHide: true,
       });
@@ -481,7 +494,7 @@ async function main() {
         }, null, 2), 'utf8');
       }
       console.log(`Encoded MP4 event frame matched the expected composition (mean RGB error ${encodedFrameComparison.meanAbsoluteDifference.toFixed(2)}, severe pixels ${(encodedFrameComparison.severeDifferenceRatio * 100).toFixed(3)}%).`);
-      console.log('MP4 SRT timing, full decode, audio-plus-credits duration, and encoded-frame synchronization all passed.');
+      console.log('MP4 embedded subtitle track matched SRT timing and text; full decode, audio-plus-credits duration, and encoded-frame synchronization all passed.');
       return;
     }
 
