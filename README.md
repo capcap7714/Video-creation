@@ -40,4 +40,6 @@ $env:CVIDEO_VIDEO_EXPORT_VOICEVOX = '1'
 npm.cmd run test:video-export-e2e
 ```
 
+MP4 Electron E2Eの完了ログと終了コードは`vrm-spike/test-results/video-export-last-run.json`に記録されます。別の保存先を使う場合は、npmへ`-- --report-file=<path>`を渡します。
+
 実機の前提、追加資材、検証コマンドは検証計画書で管理します。個人のCopilot認証や会社APIキーなどの秘密情報は、テスト資材として保存しないでください。

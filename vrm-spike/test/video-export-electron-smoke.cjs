@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const { format } = require('node:util');
 const { _electron: electron } = require('playwright');
 const { checkFfmpeg } = require('../electron/ffmpeg-service.cjs');
 const projectStore = require('../electron/project-store.cjs');
@@ -13,6 +14,22 @@ const missingAudioOnly = process.argv.includes('--missing-audio-only');
 const timelineSyncExportOnly = process.argv.includes('--timeline-sync-export-only');
 const timelineSyncOnly = !timelineSyncExportOnly && process.argv.includes('--timeline-sync-only');
 const syncResultPath = process.argv.find((argument) => argument.startsWith('--sync-result='))?.slice('--sync-result='.length);
+const resultFileArgument = process.argv.find((argument) => argument.startsWith('--result-file='))?.slice('--result-file='.length);
+const resultFilePath = resultFileArgument
+  ? path.resolve(resultFileArgument)
+  : path.resolve(__dirname, '../test-results/video-export-e2e-result.json');
+const testStartedAt = Date.now();
+const capturedTestLogs = [];
+const originalConsoleLog = console.log.bind(console);
+const originalConsoleError = console.error.bind(console);
+console.log = (...values) => {
+  capturedTestLogs.push({ level: 'info', message: format(...values) });
+  originalConsoleLog(...values);
+};
+console.error = (...values) => {
+  capturedTestLogs.push({ level: 'error', message: format(...values) });
+  originalConsoleError(...values);
+};
 
 const request = {
   title: 'MP4出力E2E',
@@ -717,7 +734,31 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+async function writeCompletionReport(status, error = null) {
+  const report = {
+    status,
+    exitCode: status === 'passed' ? 0 : 1,
+    durationMs: Date.now() - testStartedAt,
+    logs: capturedTestLogs,
+    error: error ? {
+      name: error.name ?? 'Error',
+      message: error.message ?? String(error),
+      stack: error.stack ?? null,
+    } : null,
+  };
+  try {
+    await fs.mkdir(path.dirname(resultFilePath), { recursive: true });
+    await fs.writeFile(resultFilePath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  } catch (reportError) {
+    process.exitCode = 1;
+    originalConsoleError(`Could not write E2E completion report: ${reportError instanceof Error ? reportError.message : reportError}`);
+  }
+}
+
+main()
+  .then(() => writeCompletionReport('passed'))
+  .catch(async (error) => {
+    process.exitCode = 1;
+    console.error(error);
+    await writeCompletionReport('failed', error);
+  });
