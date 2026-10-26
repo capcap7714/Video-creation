@@ -1,3 +1,60 @@
+async function writeSyntheticVrmaFixture(outputPath) {
+  const timeValues = [0, 1, 2];
+  const rotationValues = [
+    0, 0, 0, 1,
+    0, 0.38268343, 0, 0.92387953,
+    0, 0, 0, 1,
+  ];
+  const animationBuffer = Buffer.alloc((timeValues.length + rotationValues.length) * 4);
+  timeValues.forEach((value, index) => animationBuffer.writeFloatLE(value, index * 4));
+  rotationValues.forEach((value, index) => animationBuffer.writeFloatLE(value, (timeValues.length + index) * 4));
+  const fixture = {
+    asset: { version: '2.0', generator: 'C Video synthetic VRMA test fixture' },
+    extensionsUsed: ['VRMC_vrm_animation'],
+    extensions: {
+      VRMC_vrm_animation: {
+        specVersion: '1.0',
+        humanoid: { humanBones: { hips: { node: 0 } } },
+      },
+    },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ name: 'hips', translation: [0, 1, 0] }],
+    animations: [{
+      samplers: [{ input: 0, output: 1, interpolation: 'LINEAR' }],
+      channels: [{ sampler: 0, target: { node: 0, path: 'rotation' } }],
+    }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'SCALAR', min: [0], max: [2] },
+      { bufferView: 1, componentType: 5126, count: 3, type: 'VEC4' },
+    ],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 12 },
+      { buffer: 0, byteOffset: 12, byteLength: 48 },
+    ],
+    buffers: [{ byteLength: animationBuffer.length }],
+  };
+
+  const jsonBuffer = Buffer.from(JSON.stringify(fixture), 'utf8');
+  const paddedJsonBuffer = Buffer.alloc(Math.ceil(jsonBuffer.length / 4) * 4, 0x20);
+  jsonBuffer.copy(paddedJsonBuffer);
+  const binaryChunkOffset = 20 + paddedJsonBuffer.length;
+  const totalLength = binaryChunkOffset + 8 + animationBuffer.length;
+  const glbBuffer = Buffer.alloc(totalLength);
+  glbBuffer.writeUInt32LE(0x46546c67, 0);
+  glbBuffer.writeUInt32LE(2, 4);
+  glbBuffer.writeUInt32LE(totalLength, 8);
+  glbBuffer.writeUInt32LE(paddedJsonBuffer.length, 12);
+  glbBuffer.writeUInt32LE(0x4e4f534a, 16);
+  paddedJsonBuffer.copy(glbBuffer, 20);
+  glbBuffer.writeUInt32LE(animationBuffer.length, binaryChunkOffset);
+  glbBuffer.writeUInt32LE(0x004e4942, binaryChunkOffset + 4);
+  animationBuffer.copy(glbBuffer, binaryChunkOffset + 8);
+
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.writeFile(outputPath, glbBuffer);
+}
+
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
@@ -20,6 +77,7 @@ const withFailureFixture = process.argv.includes('--with-failure-fixture');
 const withRateLimitFixture = process.argv.includes('--with-rate-limit-fixture');
 const withCRunnerFixture = process.argv.includes('--with-c-runner-fixture');
 const withCResultFixture = process.argv.includes('--with-c-result-fixture');
+const withMaterialFreshnessFixture = process.argv.includes('--with-material-freshness-fixture');
 const withCErrorFixture = process.argv.includes('--with-c-error-fixture');
 const withCStopFixture = process.argv.includes('--with-c-stop-fixture');
 const withVoicevoxFixture = process.argv.includes('--with-voicevox-fixture');
@@ -29,11 +87,14 @@ const withVoicevoxHttpErrorFixture = process.argv.includes('--with-voicevox-http
 const withAudioReplacementFixture = process.argv.includes('--with-audio-replacement-fixture');
 const withFfmpegMissingFixture = process.argv.includes('--with-ffmpeg-missing-fixture');
 const withFfmpegAvailableFixture = process.argv.includes('--with-ffmpeg-available-fixture');
+const withDependencySummaryFixture = process.argv.includes('--with-dependency-summary-fixture');
+const withDependencySummaryLiveFixture = process.argv.includes('--with-dependency-summary-live-fixture');
 const withChapterManagementFixture = process.argv.includes('--with-chapter-management-fixture');
 const withTimelineMarkerFixture = process.argv.includes('--with-timeline-marker-fixture');
 const withCharacterActionFixture = process.argv.includes('--with-character-action-fixture');
 const withMissingSubtitleFixture = process.argv.includes('--with-missing-subtitle-fixture');
 const withInvalidVrmFixture = process.argv.includes('--with-invalid-vrm-fixture');
+const withMaterialEligibilityFixture = process.argv.includes('--with-material-eligibility-fixture');
 const withLiveVoicevox = process.argv.includes('--with-live-voicevox');
 const projectStore = require('../electron/project-store.cjs');
 
@@ -102,15 +163,40 @@ async function startViteServer() {
   throw new Error(`Vite did not become ready at ${url}.`);
 }
 
+async function configureMaterialTermsAutomation(page, mode = 'approve') {
+  await page.evaluate((initialMode) => {
+    window.__cvideoMaterialTermsMode = initialMode;
+    const dialog = document.querySelector('#material-terms-dialog');
+    if (!dialog) return;
+    const observer = new MutationObserver(() => {
+      if (!dialog.open || window.__cvideoMaterialTermsMode !== 'approve') return;
+      const checkbox = document.querySelector('#material-terms-confirm-checkbox');
+      const approveButton = document.querySelector('#material-terms-approve');
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+      approveButton.click();
+    });
+    observer.observe(dialog, { attributes: true, attributeFilter: ['open'] });
+  }, mode);
+}
+
 async function main() {
   let app;
   let projectDirectory;
+  let externalModelDirectory;
+  let externalModelPath;
+  let syntheticMotionFixturePath;
   let viteServer;
   let aiProviderToRestore;
 
   try {
     if (withScenarioReviewFixture || withNewProjectFlowFixture || withProjectFixture || withProjectOpenFixture || withProjectModelAssetFixture || withProjectRecoveryFixture || withProjectRecoveryFailureFixture || withCorruptProjectFixture || withAutosaveFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
       projectDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'c-video-project-ui-'));
+      if (withProjectModelAssetFixture) {
+        externalModelDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'c-video-external-model-ui-'));
+        externalModelPath = path.join(externalModelDirectory, 'C1.vrm');
+        await fs.copyFile(path.resolve(__dirname, '../../C1.vrm'), externalModelPath);
+      }
       if (!withNewProjectFlowFixture) await projectStore.saveScenarioProject(projectDirectory, fixtureRequest, fixtureDraft);
       if (withAudioReplacementFixture) {
         const audioReplacementDraft = structuredClone(fixtureDraft);
@@ -145,11 +231,12 @@ async function main() {
       env: {
         ...process.env,
         CVIDEO_DEV_URL: `${viteServer.url}/?cvideo_test_frame=1`,
-        ...(withScenarioReviewFixture || withNewProjectFlowFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withVoicevoxOfflineFixture || withVoicevoxEmptySpeakersFixture || withVoicevoxHttpErrorFixture || withAudioReplacementFixture || withFfmpegMissingFixture || withFfmpegAvailableFixture || withMissingSubtitleFixture
+        ...(withScenarioReviewFixture || withNewProjectFlowFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withVoicevoxOfflineFixture || withVoicevoxEmptySpeakersFixture || withVoicevoxHttpErrorFixture || withAudioReplacementFixture || withFfmpegMissingFixture || withFfmpegAvailableFixture || withDependencySummaryFixture || withDependencySummaryLiveFixture || withMissingSubtitleFixture || withAiProviderSettings || withProjectModelAssetFixture || withMaterialEligibilityFixture
           ? {
           NODE_ENV: 'test',
           CVIDEO_TEST_SCENARIO_SUCCESS: withScenarioReviewFixture || withNewProjectFlowFixture ? '1' : '0',
           CVIDEO_TEST_SCENARIO_FAILURE: withRateLimitFixture ? 'rate-limit' : withFailureFixture ? 'network' : '',
+          CVIDEO_TEST_COMPANY_API_MODE: withAiProviderSettings ? 'success' : '',
           CVIDEO_TEST_GCC_MISSING: withCRunnerFixture ? '1' : '0',
           CVIDEO_TEST_C_RUNNER_MODE: withCErrorFixture ? 'compile-error' : withCStopFixture ? 'hang' : withCResultFixture ? 'result' : '',
           CVIDEO_TEST_VOICEVOX_MODE: withVoicevoxOfflineFixture
@@ -158,7 +245,9 @@ async function main() {
               ? 'empty-speakers'
               : withVoicevoxHttpErrorFixture
                 ? 'http-error'
-              : withVoicevoxFixture || withAudioReplacementFixture || withMissingSubtitleFixture ? 'speakers' : '',
+              : withVoicevoxFixture || withAudioReplacementFixture || withMissingSubtitleFixture || withMaterialEligibilityFixture ? 'speakers' : '',
+              CVIDEO_TEST_DEPENDENCY_SUMMARY: withDependencySummaryFixture ? '1' : '0',
+              CVIDEO_TEST_EXTERNAL_MODEL_PATH: externalModelPath ?? '',
           ...(withFfmpegMissingFixture ? { CVIDEO_FFMPEG_PATH: path.join(os.tmpdir(), 'cvideo-test-missing-ffmpeg.exe') } : {}),
           }
           : {}),
@@ -173,6 +262,7 @@ async function main() {
     });
     window.on('pageerror', (error) => consoleErrors.push(error.message));
     await window.waitForLoadState('load');
+    await configureMaterialTermsAutomation(window, withMaterialEligibilityFixture ? 'manual' : 'approve');
     console.log(`Window ready: ${window.url()}`);
 
     const invalidScenario = await window.evaluate(async () => {
@@ -206,6 +296,95 @@ async function main() {
     }
     assert.equal(initialScenarioTitle, 'C言語の変数入門');
     console.log('Scenario preload and input-validation IPC passed');
+
+    if (withMaterialEligibilityFixture) {
+      const modelPath = path.resolve(__dirname, '../../C1.vrm');
+      await window.evaluate(() => { window.__cvideoMaterialTermsMode = 'manual'; });
+      await window.locator('#model-file').setInputFiles(modelPath);
+      await window.locator('#material-terms-dialog').waitFor({ state: 'visible' });
+      assert.equal(await window.locator('#material-terms-approve').isDisabled(), true, 'unconfirmed terms must not be approvable');
+      await window.locator('#material-terms-cancel').click();
+      await window.getByText(/利用条件が未確認のため、VRMモデル「C1\.vrm」の読み込みをキャンセルしました/u).waitFor();
+      assert.equal(await window.locator('#runtime-status').innerText(), 'モデル未読込');
+      assert.equal(await window.locator('#video-export-button').isDisabled(), true);
+
+      await window.locator('#model-file').setInputFiles(modelPath);
+      await window.locator('#material-terms-dialog').waitFor({ state: 'visible' });
+      await window.locator('#material-terms-confirm-checkbox').check();
+      assert.equal(await window.locator('#material-terms-approve').isEnabled(), true);
+      await window.locator('#material-terms-approve').click();
+      await window.getByText('VRM 1.0読込完了', { exact: true }).waitFor({ timeout: 30_000 });
+
+      syntheticMotionFixturePath = path.join(os.tmpdir(), `c-video-material-eligibility-${process.pid}.vrma`);
+      await writeSyntheticVrmaFixture(syntheticMotionFixturePath);
+      await window.locator('#motion-file').setInputFiles(syntheticMotionFixturePath);
+      await window.locator('#material-terms-dialog').waitFor({ state: 'visible' });
+      await window.locator('#material-terms-cancel').click();
+      await window.getByText(/利用条件が未確認のため、VRMAモーション/u).waitFor();
+      assert.equal(await window.locator('#runtime-status').innerText(), 'VRM 1.0読込完了', 'rejecting motion must preserve the selected model');
+
+      await window.locator('#voicevox-connect-button').click();
+      await window.getByText('接続しました。2種類のスタイルを利用できます。', { exact: true }).waitFor();
+      await window.locator('#voicevox-style').selectOption('2');
+      await window.locator('#material-terms-dialog').waitFor({ state: 'visible' });
+      await window.locator('#material-terms-cancel').click();
+      await window.waitForFunction(() => document.querySelector('#voicevox-style')?.value === '');
+      assert.equal(await window.locator('#voicevox-style').inputValue(), '', 'rejecting voice terms must clear the unapproved selection');
+      assert.equal(await window.locator('#voicevox-generate-button').isDisabled(), true);
+      await window.locator('#voicevox-style').selectOption('2');
+      await window.locator('#material-terms-dialog').waitFor({ state: 'visible' });
+      await window.locator('#material-terms-confirm-checkbox').check();
+      assert.equal(await window.locator('#material-terms-approve').isEnabled(), true);
+      await window.locator('#material-terms-approve').click();
+      await window.waitForFunction(() => !document.querySelector('#voicevox-generate-button')?.disabled);
+      assert.equal(await window.locator('#voicevox-generate-button').isEnabled(), true);
+      await window.locator('#voicevox-generate-button').click();
+      await window.getByText('試聴音声を生成しました。再生ボタンで確認できます。', { exact: true }).waitFor();
+      console.log('Unconfirmed VRM, VRMA, and VOICEVOX selections were blocked; explicit approval enabled eligible assets');
+      return;
+    }
+
+    if (withDependencySummaryFixture || withDependencySummaryLiveFixture) {
+      await window.locator('#scenario-api-key').fill('SECRET_API_KEY_CANARY_82f1');
+      await window.locator('#scenario-overview').fill('SCENARIO_BODY_CANARY_71ac この本文はコピー対象外です。');
+      await window.locator('#voicevox-text').fill('VOICE_TEXT_CANARY_54be');
+      await window.locator('#dependency-check-button').click();
+      await window.waitForFunction(
+        () => !document.querySelector('#dependency-status')?.textContent?.includes('確認しています'),
+        null,
+        { timeout: 30_000 },
+      );
+      const status = await window.locator('#dependency-status').innerText();
+      assert.match(status, /FFmpeg: (利用可能|要対応)/u);
+      assert.match(status, /VOICEVOX Engine: (利用可能|要対応)/u);
+      assert.match(status, /MSYS2 \/ GCC: (利用可能|要対応)/u);
+      assert.match(status, withDependencySummaryFixture
+        ? /Node\.js: Electron内蔵 vtest/u
+        : /Node\.js: Electron内蔵 v\d+\.\d+/u);
+      assert.match(await window.locator('#dependency-status').getAttribute('data-state'), /^(ready|warning)$/u);
+      if (withDependencySummaryFixture) {
+        assert.match(status, /FFmpeg: 利用可能/u);
+        assert.match(status, /VOICEVOX Engine: 要対応/u);
+        assert.match(status, /MSYS2 \/ GCC: 要対応/u);
+      }
+      console.log(withDependencySummaryFixture
+        ? 'Dependency summary reports all four fixture states'
+        : 'Dependency summary queried FFmpeg, VOICEVOX, GCC, and the bundled Node.js runtime');
+      if (withDependencySummaryFixture) {
+        await window.locator('#diagnostic-copy-button').click();
+        await window.getByText('環境情報をクリップボードにコピーしました。', { exact: true }).waitFor();
+        const copiedText = await app.evaluate(({ clipboard }) => clipboard.readText());
+        assert.match(copiedText, /C言語学習動画ツール 環境情報/u);
+        assert.match(copiedText, /FFmpeg: 利用可能/u);
+        assert.match(copiedText, /VOICEVOX Engine: 要対応/u);
+        assert.match(copiedText, /MSYS2 \/ GCC: 要対応/u);
+        assert.match(copiedText, /Electron: v\d+\.\d+/u);
+        assert.match(copiedText, /Node\.js: vtest/u);
+        assert.doesNotMatch(copiedText, /SECRET_API_KEY_CANARY_82f1|SCENARIO_BODY_CANARY_71ac|VOICE_TEXT_CANARY_54be/u);
+        console.log('Diagnostic clipboard report excludes secret and training-content canaries');
+      }
+      return;
+    }
 
     if (withScenarioReviewFixture) {
       aiProviderToRestore = (await window.evaluate(() => window.scenarioApi.getAiProvider())).provider;
@@ -311,14 +490,46 @@ async function main() {
       await window.waitForFunction(() => !document.querySelector('#scenario-ai-provider').disabled);
       aiProviderToRestore = (await window.evaluate(() => window.scenarioApi.getAiProvider())).provider;
       assert.ok(['copilot', 'company-api'].includes(aiProviderToRestore));
+      const storageStatus = await window.evaluate(() => window.scenarioApi.getCompanyApiKeyStatus());
+      assert.equal(storageStatus.available, true, 'OS-protected credential storage should be available in the target Windows app');
+      await window.locator('#scenario-api-key').fill('dummy-test-key-not-a-real-secret');
+      await window.locator('#scenario-api-key-save').click();
+      await window.getByText('APIキー保存済み', { exact: true }).waitFor();
+      assert.equal(await window.locator('#scenario-api-key').inputValue(), '');
+      assert.deepEqual(await window.evaluate(() => window.scenarioApi.getCompanyApiKeyStatus()), { available: true, configured: true });
+      assert.deepEqual(await window.evaluate(() => window.scenarioApi.verifyCompanyApi()), {
+        verified: true,
+        message: '会社APIとモデルを確認しました。',
+      });
       await window.locator('#scenario-ai-provider').selectOption('company-api');
-      await window.getByText('会社APIは未接続です。生成は停止中です。', { exact: true }).waitFor();
-      assert.equal(await window.locator('#scenario-generate-button').isDisabled(), true);
-      const blockedOutcome = await window.evaluate((request) => window.scenarioApi.generate(request, null), fixtureRequest);
-      assert.equal(blockedOutcome.status, 'failed');
-      assert.equal(blockedOutcome.error.kind, 'service-error');
-      assert.equal(blockedOutcome.canRetry, false);
-      assert.match(blockedOutcome.error.message, /会社APIは未接続/);
+      await window.getByText('会社API / gpt-6-lunaを使用します。失敗時にCopilotへ切り替わることはありません。', { exact: true }).waitFor();
+      assert.equal(await window.locator('#scenario-generate-button').isEnabled(), true);
+      const generatedOutcome = await window.evaluate((request) => window.scenarioApi.generate(request, null), fixtureRequest);
+      assert.equal(generatedOutcome.status, 'draft', JSON.stringify(generatedOutcome));
+      assert.equal(generatedOutcome.requiresReview, true);
+      assert.equal(generatedOutcome.draft.chapters.length, fixtureRequest.chapterCount);
+      await app.evaluate(() => {
+        process.env.CVIDEO_TEST_COMPANY_API_MODE = 'invalid-scenario';
+      });
+      const invalidScenarioOutcome = await window.evaluate(({ request, draft }) => window.scenarioApi.generate(request, draft), {
+        request: fixtureRequest,
+        draft: generatedOutcome.draft,
+      });
+      assert.equal(invalidScenarioOutcome.error.kind, 'invalid-response');
+      assert.match(invalidScenarioOutcome.error.message, /JSON応答がシナリオ項目の要件を満たしませんでした/);
+      assert.match(invalidScenarioOutcome.error.message, /該当項目: chapters/);
+      assert.equal(invalidScenarioOutcome.draft.title, generatedOutcome.draft.title);
+      await app.evaluate(() => {
+        process.env.CVIDEO_TEST_COMPANY_API_MODE = 'success';
+      });
+      const failedOutcome = await window.evaluate(async ({ request, draft }) => {
+        await window.scenarioApi.deleteCompanyApiKey();
+        return window.scenarioApi.generate(request, draft);
+      }, { request: fixtureRequest, draft: generatedOutcome.draft });
+      assert.equal(failedOutcome.status, 'failed');
+      assert.equal(failedOutcome.draft.title, generatedOutcome.draft.title);
+      assert.equal(failedOutcome.error.kind, 'authentication-error');
+      assert.equal(await window.evaluate(() => window.scenarioApi.getCompanyApiKeyStatus().then((status) => status.configured)), false);
 
       await app.close();
       app = await electron.launch({
@@ -337,13 +548,13 @@ async function main() {
       await window.waitForLoadState('load');
       await window.waitForFunction(() => !document.querySelector('#scenario-ai-provider').disabled);
       assert.equal(await window.locator('#scenario-ai-provider').inputValue(), 'company-api');
-      await window.getByText('会社APIは未接続です。生成は停止中です。', { exact: true }).waitFor();
+      assert.equal(await window.locator('#scenario-generate-button').isDisabled(), true);
 
       await window.locator('#scenario-ai-provider').selectOption('copilot');
       await window.getByText('Copilot SDKでシナリオを生成します。', { exact: true }).waitFor();
       assert.equal(await window.locator('#scenario-generate-button').isEnabled(), true);
       assert.deepEqual(await window.evaluate(() => window.scenarioApi.getAiProvider()), { provider: 'copilot' });
-      console.log('Scenario AI provider selection, restart persistence, and unconfigured-provider blocking passed');
+      console.log('Scenario AI provider persistence, OS-protected key lifecycle, company API generation, draft retention, and no-fallback behavior passed');
       return;
     }
 
@@ -604,6 +815,11 @@ async function main() {
       assert.equal(await window.locator('#scenario-title').inputValue(), fixtureDraft.title);
       assert.equal(await window.locator('#scenario-editor fieldset').count(), 1);
       if (withProjectModelAssetFixture) {
+        assert.equal(
+          await window.locator('#model-file').evaluate((input) => input.parentElement?.innerText.trim()),
+          'プロジェクトへコピーして開く',
+        );
+        assert.equal(await window.locator('#external-model-button').innerText(), 'プロジェクト外のVRMを参照');
         const sourceModelPath = path.resolve(__dirname, '../../C1.vrm');
         await window.locator('#model-file').setInputFiles(sourceModelPath);
         await window.getByText(/VRMモデルをプロジェクトにコピーしました/u).waitFor({ timeout: 30_000 });
@@ -627,7 +843,35 @@ async function main() {
         assert.equal(await window.locator('#video-export-button').isDisabled(), true);
         project = JSON.parse(await fs.readFile(path.join(projectDirectory, 'project.json'), 'utf8'));
         assert.equal(project.modelAsset.fileName, 'C1.vrm', 'the missing model reference should remain available for repair');
-        console.log('VRM was copied into the project, restored on open, and missing assets blocked export with a repair warning');
+        await window.locator('#external-model-button').click();
+        await window.waitForFunction(
+          () => document.querySelector('#runtime-status')?.textContent === 'VRM 1.0読込完了',
+          null,
+          { timeout: 30_000 },
+        );
+        await window.waitForFunction(
+          () => document.querySelector('#runtime-status')?.textContent === 'VRM 1.0読込完了',
+          null,
+          { timeout: 30_000 },
+        );
+        project = JSON.parse(await fs.readFile(path.join(projectDirectory, 'project.json'), 'utf8'));
+        assert.equal(project.modelAsset.storageMode, 'external');
+        assert.equal(project.modelAsset.sourcePath, await fs.realpath(externalModelPath));
+        assert.equal(project.modelAsset.path, undefined, 'external references should not create a project copy');
+
+        await window.locator('#scenario-open-button').click();
+        await window.waitForFunction(
+          () => document.querySelector('#runtime-status')?.textContent === 'VRM 1.0読込完了',
+          null,
+          { timeout: 30_000 },
+        );
+        assert.match(await window.locator('#model-readout').innerText(), /C1\.vrm/u);
+        await fs.rm(externalModelPath);
+        await window.locator('#scenario-open-button').click();
+        await window.getByText(/保存済みVRMが見つからないか破損しています/u).waitFor({ timeout: 15_000 });
+        assert.equal(await window.locator('#runtime-status').innerText(), 'モデル未読込');
+        assert.equal(await window.locator('#video-export-button').isDisabled(), true);
+        console.log('Copied and external VRM storage restored; missing copied or external assets were detected and blocked export');
         return;
       }
       if (withProjectRecoveryFixture) {
@@ -687,6 +931,15 @@ async function main() {
         assert.equal(await window.locator('.subtitle-text').first().inputValue(), '変数は値を保存する名前付きの場所です。');
         await window.waitForFunction(() => Number.isFinite(document.querySelector('.chapter-audio')?.duration)
           && document.querySelector('.chapter-audio').duration > 0, null, { timeout: 30000 });
+        if (withVoicevoxFixture) {
+          const chapterAudioAsset = JSON.parse(await fs.readFile(path.join(projectDirectory, 'chapters', '01', 'scenario.json'), 'utf8')).audioAsset;
+          assert.deepEqual(chapterAudioAsset.mouthTimeline, [
+            { start: 0.1, end: 0.35, expression: 'aa' },
+            { start: 0.45, end: 0.65, expression: 'ih' },
+            { start: 2.1, end: 2.35, expression: 'ou' },
+            { start: 2.45, end: 2.65, expression: 'ee' },
+          ], 'generated mouth cues should persist with the chapter WAV');
+        }
         if (withAudioReplacementFixture) {
           const audioPath = path.join(projectDirectory, 'chapters', '01', 'audio', 'narration.wav');
           const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
@@ -771,6 +1024,11 @@ async function main() {
             '音声から作成した字幕で現在の字幕を置き換えますか？',
           ]);
           assert.match(await window.locator('.chapter-material-status').first().innerText(), /音声: 最新/);
+          assert.equal(
+            await window.locator('.chapter-material-status').first().getAttribute('data-state'),
+            'needs-attention',
+            'stale subtitle timing should keep the chapter material summary in a needs-attention state',
+          );
           console.log('Declined narration replacement preserved the saved WAV; approved audio regeneration retained manually edited subtitles');
           return;
         }
@@ -789,6 +1047,11 @@ async function main() {
         await window.locator('#scenario-confirm-button').click();
         await window.locator('#scenario-save-button').click();
         await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30000 });
+        assert.equal(
+          await window.locator('.chapter-material-status').first().getAttribute('data-state'),
+          'needs-attention',
+          'a chapter without subtitles should remain in a needs-attention state',
+        );
         await window.locator('#model-file').setInputFiles(path.resolve(__dirname, '../../C1.vrm'));
         await window.getByText('VRM 1.0読込完了', { exact: true }).waitFor({ timeout: 30000 });
         await app.evaluate(({ dialog }) => {
@@ -951,6 +1214,7 @@ async function main() {
       const restartedWindow = await app.firstWindow();
       window = restartedWindow;
       await restartedWindow.waitForLoadState('load');
+      await configureMaterialTermsAutomation(restartedWindow);
       if (withLiveVoicevox) {
         restartedWindow.on('console', (message) => {
           if (message.type() === 'error') consoleErrors.push(message.text());
@@ -1019,6 +1283,13 @@ async function main() {
     }
 
     if (withFailureFixture || withRateLimitFixture) {
+      aiProviderToRestore = (await window.evaluate(() => window.scenarioApi.getAiProvider())).provider;
+      await window.waitForFunction(() => !document.querySelector('#scenario-ai-provider').disabled);
+      if (aiProviderToRestore !== 'copilot') {
+        await window.locator('#scenario-ai-provider').selectOption('copilot');
+      }
+      await window.waitForFunction(() => document.querySelector('#scenario-ai-provider')?.value === 'copilot');
+      assert.equal((await window.evaluate(() => window.scenarioApi.getAiProvider())).provider, 'copilot');
       await app.evaluate(({ dialog }, selectedPath) => {
         dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
       }, projectDirectory);
@@ -1029,8 +1300,13 @@ async function main() {
       await window.locator('#scenario-generate-button').click();
       const failureMessage = withRateLimitFixture
         ? /利用上限に達した可能性/
-        : /接続が中断された可能性/;
-      await window.getByText(failureMessage).waitFor({ timeout: 30000 });
+        : /Copilotへの接続が中断された可能性/;
+      await window.waitForFunction(
+        () => document.querySelector('#scenario-review-state')?.textContent !== '生成中',
+        null,
+        { timeout: 30000 },
+      );
+      assert.match(await window.locator('#scenario-message').innerText(), failureMessage);
       assert.equal(await window.locator('#scenario-review-state').innerText(), '下書き保持中');
       assert.equal(await window.locator('#scenario-generate-button').innerText(), '再試行');
       assert.equal(await window.locator('#scenario-editor fieldset input').first().inputValue(), chapterTitle);
@@ -1038,6 +1314,7 @@ async function main() {
       console.log(withRateLimitFixture
         ? 'Simulated rate limit preserved the draft and exposed retry'
         : 'Simulated connection failure preserved the draft and exposed retry');
+      return;
     }
 
     if (withCRunnerFixture || withCStopFixture) {
@@ -1153,6 +1430,18 @@ async function main() {
         sourceCode: executedSourceCode,
         sourceInput: executedSourceInput,
       });
+      await window.locator('#model-file').setInputFiles(path.resolve(__dirname, '../../C1.vrm'));
+      await window.waitForFunction(() => document.querySelector('#runtime-status')?.textContent === 'VRM 1.0読込完了');
+      await window.locator('#video-export-button').click();
+      assert.equal(
+        await window.locator('#video-export-status').innerText(),
+        '標準入力が変更されています。実行結果を再取得してから書き出してください。',
+      );
+      assert.equal(
+        await window.locator('.chapter-code').first().evaluate((input) => input === document.activeElement),
+        true,
+        'stale C execution results should direct the user to the code editor before export',
+      );
       console.log('C execution result was captured, edited for video, and saved to the chapter');
 
       await app.close();
@@ -1192,6 +1481,14 @@ async function main() {
       throw new Error(`VRM failed to load in Electron: ${runtimeStatus}`);
     }
     assert.equal(await window.locator('#video-export-button').isEnabled(), true, 'MP4 export should be enabled after loading a VRM');
+    const armHandHeights = await window.evaluate(() => window.__cvideoTestGetArmHandHeights?.());
+    assert.ok(
+      armHandHeights?.baseline.left !== null
+        && armHandHeights?.baseline.right !== null
+        && armHandHeights.current.left < armHandHeights.baseline.left - 0.1
+        && armHandHeights.current.right < armHandHeights.baseline.right - 0.1,
+      `both hands should lower from the VRM bind pose: ${JSON.stringify(armHandHeights)}`,
+    );
     if (withCharacterActionFixture) {
       const actionDraft = {
         title: fixtureDraft.title,
@@ -1232,7 +1529,9 @@ async function main() {
       const happyPose = await readPoseAt(5.6);
       assert.notDeepEqual(happyPose.head, baselinePose.head, 'happy action should animate the head');
       assert.ok(happyPose.happy > 0.7, 'happy action should activate the happy expression');
-      assert.ok(Math.abs((await readPoseAt(6.4)).happy - 0.65) < 0.01, 'happy expression should restore the baseline after the gesture');
+      const restoredPose = await readPoseAt(6.4);
+      const expectedHappy = await window.evaluate(() => window.__cvideoTestGetRandomExpressionAt(6.4).happy);
+      assert.ok(Math.abs(restoredPose.happy - expectedHappy) < 0.01, 'happy expression should restore the randomized baseline after the gesture');
       console.log('Character action presets animate reproducible VRM poses and restore after each gesture');
       return;
     }
@@ -1241,8 +1540,24 @@ async function main() {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     const modelRotation = await window.evaluate(() => window.__cvideoTestGetModelRotation?.());
+    assert.ok(
+      Number.isFinite(modelRotation) && Math.abs(modelRotation + Math.PI / 6) < 1e-6,
+      `VRM should face 30 degrees to the viewer's left at the initial timeline position (rotation: ${modelRotation})`,
+    );
+    const modelScreenX = await window.evaluate(() => window.__cvideoTestGetModelScreenX?.());
+    assert.ok(modelScreenX > 0.1, `VRM should be framed to the right of center (screen x: ${modelScreenX})`);
+    await window.locator('#timeline').evaluate((input) => {
+      input.value = '10';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    assert.ok(
+      Math.abs((await window.evaluate(() => window.__cvideoTestGetModelRotation?.())) + Math.PI / 6) < 1e-6,
+      'VRM should remain turned 30 degrees to the viewer\'s left at later timestamps',
+    );
     if (withCResultFixture) {
       await window.locator('#scenario-confirm-button').click();
+      await window.locator('#scenario-save-button').click();
+      await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30_000 });
       await window.locator('#video-export-button').click();
       assert.equal(
         await window.locator('#video-export-status').innerText(),
@@ -1257,17 +1572,28 @@ async function main() {
 
     const mouthTimelinePath = path.resolve(__dirname, '../test-results/voicevox-mouth-timeline.json');
     const mouthTimeline = JSON.parse(await fs.readFile(mouthTimelinePath, 'utf8'));
+    const chapterVideoStatus = window.locator('.chapter-video-status').first();
+    const markVideoCurrentForFreshnessCheck = () => chapterVideoStatus.evaluate((status) => {
+      status.textContent = '動画: 最新';
+      status.dataset.state = 'ready';
+      status.closest('fieldset')?.dispatchEvent(new Event('chapter-video-state-change'));
+    });
+    const seekAndCapture = async (seconds) => window.locator('#timeline').evaluate((input, value) => {
+      input.value = String(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return document.querySelector('#render-canvas').toDataURL('image/png');
+    }, seconds);
+    if (withVoicevoxFixture) {
+      const savedAudioMouthFrame = await seekAndCapture(0.2);
+      assert.equal(await window.locator('#mouth-readout').innerText(), '口形: aa', 'saved chapter audio should drive lip sync without importing JSON');
+      assert.equal(await seekAndCapture(0.2), savedAudioMouthFrame, 'saved audio mouth cues should reproduce the same frame after seeking');
+    }
     await window.locator('#mouth-timeline-file').setInputFiles(mouthTimelinePath);
     await window.waitForFunction(
       () => document.querySelector('#result-readout')?.textContent.includes('口パク時刻表読込完了'),
       null,
       { timeout: 30000 },
     );
-    const seekAndCapture = async (seconds) => window.locator('#timeline').evaluate((input, value) => {
-      input.value = String(value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      return document.querySelector('#render-canvas').toDataURL('image/png');
-    }, seconds);
     const aaShape = mouthTimeline.mouthTimeline.find((entry) => entry.expression === 'aa');
     const ihShape = mouthTimeline.mouthTimeline.find((entry) => entry.expression === 'ih');
     assert.ok(aaShape && ihShape, 'timeline should contain open and narrow vowel shapes');
@@ -1280,20 +1606,79 @@ async function main() {
     assert.notEqual(aaFrame, ihFrame, 'different vowels should render different mouth poses');
     console.log('VOICEVOX vowel timeline drives deterministic VRM mouth expressions');
 
-    const motionPath = path.resolve(__dirname, '../test-results/three-vrm-test.vrma');
-    assert.ok((await fs.stat(motionPath)).size > 0, 'official VRMA sample should be available');
-    await window.locator('#motion-file').setInputFiles(motionPath);
-    await window.waitForFunction(
-      () => document.querySelector('#result-readout')?.textContent.includes('VRMA読込完了'),
-      null,
-      { timeout: 30000 },
-    );
-    const motionFrameA = await seekAndCapture(0.5);
-    const motionFrameB = await seekAndCapture(1.5);
-    const repeatedMotionFrame = await seekAndCapture(0.5);
-    assert.notEqual(motionFrameA, motionFrameB, 'VRMA should change the pose at different times');
-    assert.equal(motionFrameA, repeatedMotionFrame, 'seeking to the same time should reproduce the pose');
-    console.log('VRMA loaded; distinct-time pose and deterministic seek checks passed');
+    const motionPath = withMaterialFreshnessFixture
+      ? path.join(os.tmpdir(), `c-video-material-freshness-${process.pid}.vrma`)
+      : path.resolve(__dirname, '../test-results/three-vrm-test.vrma');
+    if (withMaterialFreshnessFixture) {
+      syntheticMotionFixturePath = motionPath;
+      await writeSyntheticVrmaFixture(motionPath);
+    }
+    let motionFixtureAvailable = true;
+    try {
+      await fs.access(motionPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      motionFixtureAvailable = false;
+    }
+    if (motionFixtureAvailable) {
+      assert.ok((await fs.stat(motionPath)).size > 0, 'VRMA fixture should not be empty');
+      await window.locator('#result-readout').evaluate((readout) => { readout.textContent = ''; });
+      await window.locator('#motion-file').setInputFiles(motionPath);
+      await window.waitForFunction(
+        () => Boolean(document.querySelector('#result-readout')?.textContent),
+        null,
+        { timeout: 30000 },
+      );
+      assert.match(await window.locator('#result-readout').innerText(), /VRMA読込完了/);
+      const motionFrameA = await seekAndCapture(0.5);
+      const motionFrameB = await seekAndCapture(1);
+      const repeatedMotionFrame = await seekAndCapture(0.5);
+      assert.notEqual(motionFrameA, motionFrameB, 'VRMA should change the pose at different times');
+      assert.equal(motionFrameA, repeatedMotionFrame, 'seeking to the same time should reproduce the pose');
+      console.log('VRMA loaded; distinct-time pose and deterministic seek checks passed');
+    } else {
+      console.warn('VRMA fixture missing; skipping VRMA-specific animation checks');
+    }
+
+    if (withMaterialFreshnessFixture) {
+      assert.ok(await chapterVideoStatus.count() > 0, 'freshness fixture should contain a chapter video status');
+      await markVideoCurrentForFreshnessCheck();
+      await window.locator('#mouth-timeline-file').setInputFiles([]);
+      await window.locator('#result-readout').evaluate((readout) => { readout.textContent = ''; });
+      await window.locator('#mouth-timeline-file').setInputFiles(mouthTimelinePath);
+      await window.waitForFunction(
+        () => document.querySelector('#result-readout')?.textContent.includes('口パク時刻表読込完了'),
+        null,
+        { timeout: 30000 },
+      );
+      assert.match(await chapterVideoStatus.innerText(), /動画: 要更新/);
+      assert.equal(
+        await window.locator('.chapter-material-status').first().getAttribute('data-state'),
+        'needs-attention',
+        'a stale video should make the chapter material summary require attention',
+      );
+
+      if (motionFixtureAvailable) {
+        await markVideoCurrentForFreshnessCheck();
+        await window.locator('#motion-file').setInputFiles([]);
+        await window.locator('#result-readout').evaluate((readout) => { readout.textContent = ''; });
+        await window.locator('#motion-file').setInputFiles(motionPath);
+        await window.waitForFunction(
+          () => Boolean(document.querySelector('#result-readout')?.textContent),
+          null,
+          { timeout: 30000 },
+        );
+        assert.match(await window.locator('#result-readout').innerText(), /VRMA読込完了/);
+        assert.match(await chapterVideoStatus.innerText(), /動画: 要更新/);
+        assert.equal(
+          await window.locator('.chapter-material-status').first().getAttribute('data-state'),
+          'needs-attention',
+          'a stale video after motion replacement should make the chapter material summary require attention',
+        );
+      }
+      console.log('Changing shared mouth/motion assets marks the chapter video stale');
+      return;
+    }
 
     if (projectDirectory) {
       const captureComposition = async (seconds) => window.locator('#timeline').evaluate((input, value) => {
@@ -1340,15 +1725,37 @@ async function main() {
         context.drawImage(exportImage, 0, 0);
         const exportPixels = context.getImageData(900, 0, 1020, 880).data;
         let differingPixels = 0;
+        let maximumChannelDelta = 0;
+        let pixelsOverOneChannelDelta = 0;
+        const differenceBounds = { left: 1020, top: 880, right: -1, bottom: -1 };
         for (let index = 0; index < previewPixels.length; index += 4) {
-          if (
-            previewPixels[index] !== exportPixels[index]
-            || previewPixels[index + 1] !== exportPixels[index + 1]
-            || previewPixels[index + 2] !== exportPixels[index + 2]
-            || previewPixels[index + 3] !== exportPixels[index + 3]
-          ) differingPixels += 1;
+          let pixelMaximumChannelDelta = 0;
+          for (let channel = 0; channel < 4; channel += 1) {
+            pixelMaximumChannelDelta = Math.max(
+              pixelMaximumChannelDelta,
+              Math.abs(previewPixels[index + channel] - exportPixels[index + channel]),
+            );
+          }
+          if (pixelMaximumChannelDelta === 0) continue;
+          differingPixels += 1;
+          maximumChannelDelta = Math.max(maximumChannelDelta, pixelMaximumChannelDelta);
+          if (pixelMaximumChannelDelta > 1) pixelsOverOneChannelDelta += 1;
+          const pixelNumber = index / 4;
+          const pixelX = pixelNumber % 1020;
+          const pixelY = Math.floor(pixelNumber / 1020);
+          differenceBounds.left = Math.min(differenceBounds.left, pixelX);
+          differenceBounds.top = Math.min(differenceBounds.top, pixelY);
+          differenceBounds.right = Math.max(differenceBounds.right, pixelX);
+          differenceBounds.bottom = Math.max(differenceBounds.bottom, pixelY);
         }
-        return { differingPixels, comparedPixels: previewPixels.length / 4, exportText };
+        return {
+          differingPixels,
+          comparedPixels: previewPixels.length / 4,
+          maximumChannelDelta,
+          pixelsOverOneChannelDelta,
+          differenceBounds: differingPixels > 0 ? differenceBounds : null,
+          exportText,
+        };
       }, compositionAtOneSecond.frame);
       assert.deepEqual(
         exportFrameComparison.exportText,
@@ -1397,7 +1804,9 @@ async function main() {
     }
     await app?.close();
     await stopProcess(viteServer?.server);
+    if (syntheticMotionFixturePath) await fs.rm(syntheticMotionFixturePath, { force: true });
     if (projectDirectory) await fs.rm(projectDirectory, { recursive: true, force: true });
+    if (externalModelDirectory) await fs.rm(externalModelDirectory, { recursive: true, force: true });
   }
 }
 

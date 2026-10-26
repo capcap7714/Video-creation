@@ -11,7 +11,7 @@
 ## PCごとに用意するもの
 
 - `C1.vrm`などのVRMモデルとVRMAモーション。権利と社内ルールを確認し、必要なPCへ個別に配置します。モデルはGitHubへ登録しません。
-- 一部の描画E2Eが使う`vrm-spike/test-results/three-vrm-test.vrma`と`voicevox-mouth-timeline.json`。検証用生成物のためGitHubへ登録せず、必要な場合に検証環境で用意します。
+- 一部の描画E2Eが使う`vrm-spike/test-results/voicevox-mouth-timeline.json`。`three-vrm-test.vrma`は`test:material-freshness-ui`がOS一時フォルダーに合成fixtureとして生成し、テスト終了時に削除します。検証用生成物はGitHubへ登録しません。
 - GCC、VOICEVOX Engine、製品用FFmpegなどの外部ソフト。
 - APIトークンや`.env`などの認証情報。GitHub、プロジェクトJSON、ログ、Git remote URLへ記録しません。GitHub認証にはGit Credential Managerなどの資格情報管理を使います。
 

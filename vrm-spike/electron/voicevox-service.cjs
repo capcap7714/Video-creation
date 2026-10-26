@@ -1,4 +1,6 @@
 const API_ORIGIN = 'http://127.0.0.1:50021';
+const MAX_MOUTH_CUES = 10_000;
+const VOWEL_EXPRESSIONS = { a: 'aa', i: 'ih', u: 'ou', e: 'ee', o: 'oh' };
 const MAX_WAV_BYTES = 50 * 1024 * 1024;
 const MAX_SENTENCES = 100;
 
@@ -114,6 +116,7 @@ async function synthesizeSpeech({ text, styleId }, fetchImpl = fetch) {
 
   const segments = [];
   const subtitles = [];
+  const mouthTimeline = [];
   let wavFormat;
   let totalDuration = 0;
   let totalBytes = 44;
@@ -174,11 +177,39 @@ async function synthesizeSpeech({ text, styleId }, fetchImpl = fetch) {
       endSeconds: Math.round(endSeconds * 1000) / 1000,
       text: sentence,
     });
+    let phonemeCursor = totalDuration + prePhonemeLength;
+    for (const phrase of Array.isArray(audioQuery.accent_phrases) ? audioQuery.accent_phrases : []) {
+      for (const mora of Array.isArray(phrase?.moras) ? phrase.moras : []) {
+        const consonantLength = Number(mora?.consonant_length ?? 0);
+        const vowelLength = Number(mora?.vowel_length ?? 0);
+        if (!Number.isFinite(consonantLength) || consonantLength < 0 || !Number.isFinite(vowelLength) || vowelLength < 0) {
+          throw new Error('VOICEVOX Engineの母音タイミングを確認できません。');
+        }
+        const vowelStart = phonemeCursor + consonantLength;
+        const expression = VOWEL_EXPRESSIONS[String(mora?.vowel ?? '').toLowerCase()];
+        if (expression && vowelLength > 0) {
+          const cueStart = Math.round(vowelStart * 1000) / 1000;
+          const cueEnd = Math.round(Math.min(vowelStart + vowelLength, endSeconds) * 1000) / 1000;
+          if (cueEnd > cueStart) mouthTimeline.push({ start: cueStart, end: cueEnd, expression });
+          if (mouthTimeline.length > MAX_MOUTH_CUES) throw new Error('生成音声の口形タイミングが許容範囲を超えています。');
+        }
+        phonemeCursor += consonantLength + vowelLength;
+      }
+      if (phrase?.pause_mora) {
+        const pauseConsonantLength = Number(phrase.pause_mora.consonant_length ?? 0);
+        const pauseVowelLength = Number(phrase.pause_mora.vowel_length ?? 0);
+        if (
+          !Number.isFinite(pauseConsonantLength) || pauseConsonantLength < 0
+          || !Number.isFinite(pauseVowelLength) || pauseVowelLength < 0
+        ) throw new Error('VOICEVOX Engineの母音タイミングを確認できません。');
+        phonemeCursor += pauseConsonantLength + pauseVowelLength;
+      }
+    }
     segments.push(segmentFormat.pcm);
     totalDuration += durationSeconds;
   }
 
-  return { audio: new Uint8Array(makePcmWav(Buffer.concat(segments), wavFormat)), subtitles };
+  return { audio: new Uint8Array(makePcmWav(Buffer.concat(segments), wavFormat)), subtitles, mouthTimeline };
 }
 
 module.exports = { listSpeakers, synthesizeSpeech };

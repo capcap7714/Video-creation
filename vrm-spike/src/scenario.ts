@@ -39,6 +39,11 @@ const ScenarioChapterSchema = z.object({
     styleId: z.number().int().nonnegative(),
     speakerName: z.string().trim().min(1).max(100).default('話者名未記録'),
     narrationHash: z.string().regex(/^[a-f0-9]{64}$/),
+    mouthTimeline: z.array(z.object({
+      start: z.number().min(0).max(3600),
+      end: z.number().positive().max(3600),
+      expression: z.enum(['aa', 'ih', 'ou', 'ee', 'oh']),
+    }).strict().refine((cue) => cue.end > cue.start)).max(10000).default([]),
   }).strict().nullable().default(null),
   executionResult: CExecutionResultSchema.nullable().default(null),
   runCode: z.boolean(),
@@ -126,6 +131,7 @@ export type ChapterTimelineIssue = {
 export type ScenarioGenerationFailureKind =
   | 'invalid-input'
   | 'invalid-response'
+  | 'authentication-error'
   | 'rate-limit'
   | 'connection-error'
   | 'service-error';
@@ -295,6 +301,10 @@ export function createScenarioPrompt(input: unknown): { request: ScenarioRequest
     'コード例を実行する場合はrunCodeをtrueにし、codeExampleを必ず設定してください。実行しない場合はrunCodeをfalseにしてください。',
     'すべての章にrunInputを含め、標準入力が不要なら空文字にしてください。codeDisplayModeはall、codeStagesとsubtitlesは空配列、audioAssetはnullにしてください。',
     'executionResultは実行前なのでnullにしてください。',
+    '出力は厳密なJSONオブジェクトにしてください。トップレベルのキーはtitleとchaptersだけで、各章のキーは次の例にあるものだけです。余分なキーは追加しないでください。',
+    '各章のJSON形式: {"title":"章タイトル","learningObjective":"学習目標","targetMinutes":3,"narration":"20文字以上の読み上げ本文","codeExample":null,"runInput":"","codeDisplayMode":"all","codeStages":[],"subtitles":[],"subtitleNarrationHash":null,"characterActions":[],"audioAsset":null,"executionResult":null,"runCode":false,"executionAtSeconds":0}',
+    'targetMinutesは指定された章ごとの目標時間と同じ整数にしてください。narrationは20文字以上、codeExampleはコードがなければnullにしてください。runCodeがtrueならcodeExampleをnullにできません。すべてのキーを省略せず含めてください。',
+    request.chapterCount === undefined ? '' : `chaptersの件数は必ず${request.chapterCount}件にしてください。`,
     '概要にない仕様や事実を作らず、不明な点は説明を控えめにしてください。',
     '出力は指定された構造化データだけにし、前後にMarkdownや説明を付けないでください。',
     `教材タイトル: ${request.title}`,

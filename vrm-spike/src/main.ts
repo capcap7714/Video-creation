@@ -34,6 +34,10 @@ declare global {
         provider: 'copilot' | 'company-api';
         message?: string;
       }>;
+      getCompanyApiKeyStatus: () => Promise<{ available: boolean; configured: boolean }>;
+      setCompanyApiKey: (apiKey: string) => Promise<{ saved: boolean; configured: boolean; message: string }>;
+      deleteCompanyApiKey: () => Promise<{ deleted: boolean; configured: boolean; message: string }>;
+      verifyCompanyApi: () => Promise<{ verified: boolean; message: string }>;
       generate: (input: ScenarioRequest, previousDraft: ScenarioDraft | null) => Promise<ScenarioGenerationOutcome>;
       save: (request: ScenarioRequest, draft: ScenarioDraft) => Promise<{
         saved: boolean;
@@ -51,7 +55,15 @@ declare global {
       saveModel: (fileName: string, bytes: Uint8Array) => Promise<{
         saved: boolean;
         unavailable?: boolean;
-        modelAsset?: { fileName: string };
+        modelAsset?: { fileName: string; storageMode?: 'copy' | 'external' };
+        message?: string;
+      }>;
+      selectExternalModel: () => Promise<{
+        selected: boolean;
+        cancelled?: boolean;
+        unavailable?: boolean;
+        modelAsset?: { fileName: string; storageMode: 'external' };
+        bytes?: Uint8Array;
         message?: string;
       }>;
       open: () => Promise<{
@@ -61,7 +73,7 @@ declare global {
         request?: ScenarioRequest;
         draft?: ScenarioDraft;
         recoveredFromInterruptedSave?: boolean;
-        modelAsset?: { fileName: string; bytes: Uint8Array };
+        modelAsset?: { fileName: string; storageMode: 'copy' | 'external'; bytes: Uint8Array };
         modelAssetMissing?: boolean;
       }>;
       exportSubtitles: (
@@ -79,6 +91,7 @@ declare global {
         generated: boolean;
         audio?: Uint8Array;
         subtitles?: { startSeconds: number; endSeconds: number; text: string }[];
+        mouthTimeline?: { start: number; end: number; expression: string }[];
         message?: string;
       }>;
       saveChapterAudio: (
@@ -88,6 +101,7 @@ declare global {
         styleId: number,
         narration: string,
         speakerName: string,
+        mouthTimeline: { start: number; end: number; expression: string }[],
       ) => Promise<{
         saved: boolean;
         audioAsset?: ScenarioDraft['chapters'][number]['audioAsset'];
@@ -114,6 +128,15 @@ declare global {
       finishExport: (exportId: string) => Promise<{ saved: boolean; path?: string; message: string }>;
       cancelExport: (exportId: string) => Promise<boolean>;
     };
+    environmentApi?: {
+      checkDependencies: () => Promise<{
+        ffmpeg: { available: boolean; detail: string };
+        voicevox: { available: boolean; detail: string };
+        gcc: { available: boolean; detail: string };
+        nodeVersion: string;
+      }>;
+      copyDiagnosticInfo: () => Promise<{ copied: boolean }>;
+    };
   }
 }
 
@@ -123,7 +146,10 @@ videoFrameCanvas.width = 1920;
 videoFrameCanvas.height = 1080;
 const videoFrameContext = videoFrameCanvas.getContext('2d')!;
 const fileInput = document.querySelector<HTMLInputElement>('#model-file')!;
+const externalModelButton = document.querySelector<HTMLButtonElement>('#external-model-button')!;
 let activeModelFile: File | undefined;
+let activeModelStorageMode: 'copy' | 'external' = 'copy';
+let pendingModelStorageMode: 'copy' | 'external' | undefined;
 const motionInput = document.querySelector<HTMLInputElement>('#motion-file')!;
 const mouthTimelineInput = document.querySelector<HTMLInputElement>('#mouth-timeline-file')!;
 const timeline = document.querySelector<HTMLInputElement>('#timeline')!;
@@ -144,8 +170,19 @@ const voicevoxText = document.querySelector<HTMLTextAreaElement>('#voicevox-text
 const voicevoxGenerateButton = document.querySelector<HTMLButtonElement>('#voicevox-generate-button')!;
 const voicevoxAudio = document.querySelector<HTMLAudioElement>('#voicevox-audio')!;
 const voicevoxStatus = document.querySelector<HTMLElement>('#voicevox-status')!;
+const voicevoxLicenseStatus = document.querySelector<HTMLElement>('#voicevox-license-status')!;
+const materialTermsDialog = document.querySelector<HTMLDialogElement>('#material-terms-dialog')!;
+const materialTermsDescription = document.querySelector<HTMLElement>('#material-terms-description')!;
+const materialTermsCheckbox = document.querySelector<HTMLInputElement>('#material-terms-confirm-checkbox')!;
+const materialTermsApproveButton = document.querySelector<HTMLButtonElement>('#material-terms-approve')!;
+const approvedVoiceStyleIds = new Set<string>();
+let confirmedVoiceStyleId: string | null = null;
 const ffmpegCheckButton = document.querySelector<HTMLButtonElement>('#ffmpeg-check-button')!;
 const ffmpegStatus = document.querySelector<HTMLOutputElement>('#ffmpeg-status')!;
+const dependencyCheckButton = document.querySelector<HTMLButtonElement>('#dependency-check-button')!;
+const dependencyStatus = document.querySelector<HTMLOutputElement>('#dependency-status')!;
+const diagnosticCopyButton = document.querySelector<HTMLButtonElement>('#diagnostic-copy-button')!;
+const diagnosticCopyStatus = document.querySelector<HTMLOutputElement>('#diagnostic-copy-status')!;
 const runtimeStatus = document.querySelector<HTMLElement>('#runtime-status')!;
 const modelReadout = document.querySelector<HTMLElement>('#model-readout')!;
 const mouthReadout = document.querySelector<HTMLElement>('#mouth-readout')!;
@@ -160,7 +197,55 @@ const emptyState = document.querySelector<HTMLElement>('#empty-state')!;
 const scenarioForm = document.querySelector<HTMLFormElement>('#scenario-request-form')!;
 const scenarioEditor = document.querySelector<HTMLDivElement>('#scenario-editor')!;
 const scenarioAiProviderSelect = document.querySelector<HTMLSelectElement>('#scenario-ai-provider')!;
+
+function requestMaterialTermsConfirmation(kind: string, name: string) {
+  materialTermsDescription.textContent = `${kind}「${name}」の利用条件を確認してください。社内共有または動画利用が許可されていない場合や、条件を確認できない場合は「選択しない」を選んでください。`;
+  materialTermsCheckbox.checked = false;
+  materialTermsApproveButton.disabled = true;
+  return new Promise<boolean>((resolve) => {
+    materialTermsDialog.addEventListener('close', () => {
+      resolve(materialTermsDialog.returnValue === 'approve' && materialTermsCheckbox.checked);
+    }, { once: true });
+    materialTermsDialog.showModal();
+  });
+}
+
+function isVoiceStyleApproved(styleId = voicevoxStyle.value) {
+  return approvedVoiceStyleIds.has(styleId);
+}
+
+function refreshVoiceGenerationControls() {
+  const voiceAvailable = !voicevoxStyle.disabled && isVoiceStyleApproved();
+  voicevoxGenerateButton.disabled = !voiceAvailable;
+  for (const button of scenarioEditor.querySelectorAll<HTMLButtonElement>('.chapter-audio-generate')) {
+    const narration = button.closest('fieldset')?.querySelector<HTMLTextAreaElement>('.chapter-narration');
+    button.disabled = !voiceAvailable || !narration || narration.value.trim().length > 1000;
+  }
+}
+
+async function ensureVoiceStyleApproved(styleId: string, speakerName: string) {
+  if (approvedVoiceStyleIds.has(styleId)) return true;
+  const approved = await requestMaterialTermsConfirmation('VOICEVOX話者', speakerName);
+  if (approved) {
+    approvedVoiceStyleIds.add(styleId);
+    voicevoxLicenseStatus.textContent = `社内利用条件を確認済み: ${speakerName}`;
+    voicevoxLicenseStatus.dataset.state = 'ready';
+  } else {
+    voicevoxLicenseStatus.textContent = `利用条件が未確認のため選択できません: ${speakerName}`;
+    voicevoxLicenseStatus.dataset.state = 'warning';
+  }
+  return approved;
+}
+
+materialTermsCheckbox.addEventListener('change', () => {
+  materialTermsApproveButton.disabled = !materialTermsCheckbox.checked;
+});
 const scenarioAiProviderStatus = document.querySelector<HTMLOutputElement>('#scenario-ai-provider-status')!;
+const scenarioApiKeyInput = document.querySelector<HTMLInputElement>('#scenario-api-key')!;
+const scenarioApiKeyStatus = document.querySelector<HTMLOutputElement>('#scenario-api-key-status')!;
+const scenarioApiKeySaveButton = document.querySelector<HTMLButtonElement>('#scenario-api-key-save')!;
+const scenarioApiKeyDeleteButton = document.querySelector<HTMLButtonElement>('#scenario-api-key-delete')!;
+const scenarioApiVerifyButton = document.querySelector<HTMLButtonElement>('#scenario-api-verify')!;
 const scenarioGenerateButton = document.querySelector<HTMLButtonElement>('#scenario-generate-button')!;
 const scenarioConfirmButton = document.querySelector<HTMLButtonElement>('#scenario-confirm-button')!;
 const scenarioSaveButton = document.querySelector<HTMLButtonElement>('#scenario-save-button')!;
@@ -173,11 +258,21 @@ const scenarioReviewState = document.querySelector<HTMLElement>('#scenario-revie
 let scenarioDraft: ScenarioDraft | null = null;
 let confirmedScenario: ScenarioDraft | null = null;
 let scenarioHasUnsavedChanges = true;
+
+function markAllChapterVideosStale() {
+  scenarioEditor.querySelectorAll<HTMLSpanElement>('.chapter-video-status').forEach((status) => {
+    status.textContent = '動画: 要更新';
+    status.dataset.state = 'stale';
+    status.closest('fieldset')?.dispatchEvent(new Event('chapter-video-state-change'));
+  });
+}
 let scenarioAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
 let scenarioAutosaveRevision = 0;
 let scenarioAutosaveQueue = Promise.resolve();
 let scenarioAiProvider: 'copilot' | 'company-api' = 'copilot';
 let scenarioAiSettingsReady = false;
+let scenarioApiKeyConfigured = false;
+let scenarioApiKeyStorageAvailable = false;
 let playbackFrame: number | null = null;
 let playbackStartedAt = 0;
 let playbackOriginSeconds = 0;
@@ -189,10 +284,22 @@ const creditDurationSeconds = 3;
 function updateScenarioAiProviderUi() {
   scenarioAiProviderSelect.value = scenarioAiProvider;
   scenarioAiProviderSelect.disabled = !scenarioAiSettingsReady;
-  scenarioGenerateButton.disabled = !scenarioAiSettingsReady || scenarioAiProvider !== 'copilot';
+  scenarioGenerateButton.disabled = !scenarioAiSettingsReady
+    || (scenarioAiProvider === 'company-api' ? !scenarioApiKeyConfigured : false);
   scenarioAiProviderStatus.textContent = scenarioAiProvider === 'company-api'
-    ? '会社APIは未接続です。生成は停止中です。'
+    ? '会社API / gpt-6-lunaを使用します。失敗時にCopilotへ切り替わることはありません。'
     : 'Copilot SDKでシナリオを生成します。';
+  scenarioApiKeyInput.disabled = !scenarioApiKeyStorageAvailable;
+  scenarioApiKeySaveButton.disabled = !scenarioApiKeyStorageAvailable || !scenarioApiKeyInput.value.trim();
+  scenarioApiKeyDeleteButton.disabled = !scenarioApiKeyConfigured || !scenarioApiKeyStorageAvailable;
+  scenarioApiVerifyButton.disabled = !scenarioApiKeyConfigured || !scenarioApiKeyStorageAvailable;
+  if (!scenarioApiKeyStorageAvailable) {
+    scenarioApiKeyStatus.textContent = 'OS保護ストレージを利用できません。APIキーは保存できません。';
+  } else if (!scenarioApiKeyConfigured) {
+    scenarioApiKeyStatus.textContent = 'APIキー未設定';
+  } else if (!scenarioApiKeyStatus.textContent.includes('確認しました')) {
+    scenarioApiKeyStatus.textContent = 'APIキー保存済み';
+  }
 }
 
 async function loadScenarioAiProvider() {
@@ -203,6 +310,9 @@ async function loadScenarioAiProvider() {
   try {
     const settings = await window.scenarioApi.getAiProvider();
     scenarioAiProvider = settings.provider;
+    const apiKeyStatus = await window.scenarioApi.getCompanyApiKeyStatus();
+    scenarioApiKeyStorageAvailable = apiKeyStatus.available;
+    scenarioApiKeyConfigured = apiKeyStatus.configured;
     scenarioAiSettingsReady = true;
     updateScenarioAiProviderUi();
   } catch {
@@ -224,6 +334,54 @@ scenarioAiProviderSelect.addEventListener('change', async () => {
     }
   } catch {
     scenarioAiProviderStatus.textContent = 'AIプロバイダー設定を保存できませんでした。';
+  } finally {
+    updateScenarioAiProviderUi();
+  }
+});
+
+scenarioApiKeyInput.addEventListener('input', updateScenarioAiProviderUi);
+
+scenarioApiKeySaveButton.addEventListener('click', async () => {
+  scenarioApiKeySaveButton.disabled = true;
+  scenarioApiKeyStatus.textContent = 'APIキーを暗号化して保存しています。';
+  try {
+    const result = await window.scenarioApi?.setCompanyApiKey(scenarioApiKeyInput.value);
+    scenarioApiKeyInput.value = '';
+    if (result) {
+      scenarioApiKeyConfigured = result.configured;
+      scenarioApiKeyStatus.textContent = result.message;
+    }
+  } catch {
+    scenarioApiKeyInput.value = '';
+    scenarioApiKeyStatus.textContent = 'APIキーを安全に保存できませんでした。';
+  } finally {
+    updateScenarioAiProviderUi();
+  }
+});
+
+scenarioApiKeyDeleteButton.addEventListener('click', async () => {
+  scenarioApiKeyDeleteButton.disabled = true;
+  try {
+    const result = await window.scenarioApi?.deleteCompanyApiKey();
+    if (result) {
+      scenarioApiKeyConfigured = result.configured;
+      scenarioApiKeyStatus.textContent = result.message;
+    }
+  } catch {
+    scenarioApiKeyStatus.textContent = 'APIキーを削除できませんでした。';
+  } finally {
+    updateScenarioAiProviderUi();
+  }
+});
+
+scenarioApiVerifyButton.addEventListener('click', async () => {
+  scenarioApiVerifyButton.disabled = true;
+  scenarioApiKeyStatus.textContent = '会社APIへの接続を確認しています。';
+  try {
+    const result = await window.scenarioApi?.verifyCompanyApi();
+    scenarioApiKeyStatus.textContent = result?.message ?? '会社APIの接続を確認できませんでした。';
+  } catch {
+    scenarioApiKeyStatus.textContent = '会社APIの接続を確認できませんでした。';
   } finally {
     updateScenarioAiProviderUi();
   }
@@ -305,21 +463,25 @@ voicevoxConnectButton.addEventListener('click', async () => {
   try {
     if (!window.voicevoxApi) throw new Error('音声機能はElectronアプリ内で利用できます。');
     const result = await window.voicevoxApi.listSpeakers();
+    approvedVoiceStyleIds.clear();
+    confirmedVoiceStyleId = null;
     voicevoxStyle.replaceChildren();
     for (const speaker of result.speakers) {
       for (const style of speaker.styles) {
         const option = document.createElement('option');
         option.value = String(style.id);
         option.textContent = `${speaker.name} / ${style.name}`;
+        option.dataset.speakerName = speaker.name;
         voicevoxStyle.append(option);
       }
     }
+    voicevoxStyle.selectedIndex = -1;
     voicevoxStyle.disabled = !result.connected || voicevoxStyle.options.length === 0;
-    voicevoxGenerateButton.disabled = voicevoxStyle.disabled;
-    for (const button of scenarioEditor.querySelectorAll<HTMLButtonElement>('.chapter-audio-generate')) {
-      const narration = button.closest('fieldset')?.querySelector<HTMLTextAreaElement>('.chapter-narration');
-      button.disabled = voicevoxStyle.disabled || !narration || narration.value.trim().length > 1000;
-    }
+    voicevoxLicenseStatus.textContent = voicevoxStyle.disabled
+      ? '利用できる話者がありません。'
+      : '話者を選択すると利用条件の確認が必要です。';
+    voicevoxLicenseStatus.dataset.state = '';
+    refreshVoiceGenerationControls();
     if (!result.connected) {
       voicevoxStatus.dataset.state = 'error';
       voicevoxStatus.textContent = result.message
@@ -339,6 +501,23 @@ voicevoxConnectButton.addEventListener('click', async () => {
   }
 });
 
+voicevoxStyle.addEventListener('change', async () => {
+  const styleId = voicevoxStyle.value;
+  if (!styleId) {
+    refreshVoiceGenerationControls();
+    return;
+  }
+  const selectedOption = voicevoxStyle.selectedOptions[0];
+  const speakerName = selectedOption?.dataset.speakerName ?? selectedOption?.textContent ?? '話者名未記録';
+  const approved = await ensureVoiceStyleApproved(styleId, speakerName);
+  if (approved) {
+    confirmedVoiceStyleId = styleId;
+  } else {
+    voicevoxStyle.value = confirmedVoiceStyleId ?? '';
+  }
+  refreshVoiceGenerationControls();
+});
+
 ffmpegCheckButton.addEventListener('click', async () => {
   ffmpegCheckButton.disabled = true;
   ffmpegStatus.textContent = 'FFmpegを確認しています...';
@@ -354,6 +533,46 @@ ffmpegCheckButton.addEventListener('click', async () => {
     ffmpegStatus.dataset.state = 'missing';
   } finally {
     ffmpegCheckButton.disabled = false;
+  }
+});
+
+dependencyCheckButton.addEventListener('click', async () => {
+  dependencyCheckButton.disabled = true;
+  dependencyStatus.textContent = '外部依存を確認しています...';
+  dependencyStatus.dataset.state = 'loading';
+  try {
+    if (!window.environmentApi) throw new Error('環境確認はElectronアプリ内で利用できます。');
+    const result = await window.environmentApi.checkDependencies();
+    dependencyStatus.textContent = [
+      `FFmpeg: ${result.ffmpeg.available ? '利用可能' : '要対応'} (${result.ffmpeg.detail})`,
+      `VOICEVOX Engine: ${result.voicevox.available ? '利用可能' : '要対応'} (${result.voicevox.detail})`,
+      `MSYS2 / GCC: ${result.gcc.available ? '利用可能' : '要対応'} (${result.gcc.detail})`,
+      `Node.js: Electron内蔵 v${result.nodeVersion}`,
+    ].join('\n');
+    dependencyStatus.dataset.state = result.ffmpeg.available && result.voicevox.available && result.gcc.available
+      ? 'ready'
+      : 'warning';
+  } catch (error) {
+    dependencyStatus.textContent = error instanceof Error ? error.message : '外部依存を確認できません。';
+    dependencyStatus.dataset.state = 'error';
+  } finally {
+    dependencyCheckButton.disabled = false;
+  }
+});
+
+diagnosticCopyButton.addEventListener('click', async () => {
+  diagnosticCopyButton.disabled = true;
+  diagnosticCopyStatus.textContent = '';
+  try {
+    if (!window.environmentApi) throw new Error('環境情報のコピーはElectronアプリ内で利用できます。');
+    const result = await window.environmentApi.copyDiagnosticInfo();
+    diagnosticCopyStatus.textContent = result.copied
+      ? '環境情報をクリップボードにコピーしました。'
+      : '環境情報をコピーできませんでした。';
+  } catch {
+    diagnosticCopyStatus.textContent = '環境情報をコピーできませんでした。';
+  } finally {
+    diagnosticCopyButton.disabled = false;
   }
 });
 
@@ -404,6 +623,23 @@ videoExportButton.addEventListener('click', async () => {
       : '選択した章に保存済み音声がありません。音声を生成して保存してください。';
     const audioRegenerateButton = selectedChapter?.querySelector<HTMLButtonElement>('.chapter-audio-generate');
     (audioRegenerateButton && !audioRegenerateButton.disabled ? audioRegenerateButton : voicevoxConnectButton).focus();
+    return;
+  }
+  let savedAudioAsset: { styleId?: number; speakerName?: string };
+  try {
+    savedAudioAsset = JSON.parse(
+      selectedChapter.querySelector<HTMLDivElement>('.chapter-audio-controls')!.dataset.audioAsset!,
+    ) as { styleId?: number; speakerName?: string };
+  } catch {
+    videoExportStatus.textContent = '保存済み音声の利用条件を確認できません。音声を再生成してください。';
+    return;
+  }
+  const speakerName = savedAudioAsset.speakerName?.trim() || '話者名未記録';
+  const voiceStyleId = Number.isSafeInteger(savedAudioAsset.styleId)
+    ? String(savedAudioAsset.styleId)
+    : `saved:${speakerName}`;
+  if (!await ensureVoiceStyleApproved(voiceStyleId, speakerName)) {
+    videoExportStatus.textContent = '音声の利用条件が未確認のため、書き出しを停止しました。';
     return;
   }
   const subtitles = [...selectedChapter.querySelectorAll<HTMLDivElement>('.subtitle-row')].map((row) => ({
@@ -535,6 +771,7 @@ videoExportButton.addEventListener('click', async () => {
     if (chapterVideoStatus) {
       chapterVideoStatus.textContent = '動画: 最新';
       chapterVideoStatus.dataset.state = 'ready';
+      selectedChapter.dispatchEvent(new Event('chapter-video-state-change'));
     }
     videoExportStatus.textContent = `${completed.message} ${completed.path ?? ''}`;
   } catch (error) {
@@ -576,6 +813,13 @@ voicevoxGenerateButton.addEventListener('click', async () => {
     voicevoxStatus.textContent = '試聴テキストと話者・スタイルを確認してください。';
     return;
   }
+  const selectedOption = voicevoxStyle.selectedOptions[0];
+  const speakerName = selectedOption?.dataset.speakerName ?? selectedOption?.textContent ?? '話者名未記録';
+  if (!await ensureVoiceStyleApproved(voicevoxStyle.value, speakerName)) {
+    voicevoxStyle.value = confirmedVoiceStyleId ?? '';
+    refreshVoiceGenerationControls();
+    return;
+  }
   voicevoxGenerateButton.disabled = true;
   voicevoxStatus.textContent = 'VOICEVOXで音声を生成しています...';
   try {
@@ -595,7 +839,7 @@ voicevoxGenerateButton.addEventListener('click', async () => {
   } catch {
     voicevoxStatus.textContent = '音声を生成できませんでした。VOICEVOX Engineの状態を確認してください。';
   } finally {
-    voicevoxGenerateButton.disabled = voicevoxStyle.disabled;
+    refreshVoiceGenerationControls();
   }
 });
 
@@ -827,20 +1071,46 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
   const testWindow = window as Window & {
     __cvideoTestCreateVideoFrame?: typeof createVideoFrame;
     __cvideoTestGetModelRotation?: () => number;
-    __cvideoTestGetCharacterPose?: () => { head: [number, number, number] | null; happy: number | null };
+    __cvideoTestGetModelScreenX?: () => number;
+    __cvideoTestGetArmHandHeights?: () => {
+      baseline: { left: number | null; right: number | null };
+      current: { left: number | null; right: number | null };
+    };
+    __cvideoTestGetCharacterPose?: () => { head: [number, number, number] | null; happy: number | null; blink: number | null };
+    __cvideoTestGetRandomExpressionAt?: (seconds: number) => { happy: number; blink: number };
     __cvideoTestGetCharacterActionAt?: typeof getCharacterActionAt;
     __cvideoTestReadExportText?: () => { code: string; result: string; subtitle: string };
     __cvideoTestLoadScenarioDraft?: (draft: ScenarioDraft) => void;
   };
   testWindow.__cvideoTestCreateVideoFrame = createVideoFrame;
   testWindow.__cvideoTestGetModelRotation = () => activeVrm?.scene.rotation.y ?? Number.NaN;
+  testWindow.__cvideoTestGetModelScreenX = () => {
+    if (!activeVrm) return Number.NaN;
+    return new THREE.Box3().setFromObject(activeVrm.scene).getCenter(new THREE.Vector3()).project(camera).x;
+  };
+  testWindow.__cvideoTestGetArmHandHeights = () => {
+    activeVrm?.scene.updateMatrixWorld(true);
+    const getHandHeight = (side: 'left' | 'right') => {
+      const hand = activeVrm?.humanoid.getNormalizedBoneNode(`${side}Hand` as 'leftHand' | 'rightHand');
+      return hand ? hand.getWorldPosition(new THREE.Vector3()).y : null;
+    };
+    return {
+      baseline: baselineArmHandHeights,
+      current: { left: getHandHeight('left'), right: getHandHeight('right') },
+    };
+  };
   testWindow.__cvideoTestGetCharacterPose = () => {
     const head = activeVrm?.humanoid.getNormalizedBoneNode('head');
     return {
       head: head ? [head.rotation.x, head.rotation.y, head.rotation.z] : null,
       happy: activeVrm?.expressionManager?.getValue('happy') ?? null,
+      blink: activeVrm?.expressionManager?.getValue('blink') ?? null,
     };
   };
+  testWindow.__cvideoTestGetRandomExpressionAt = (seconds) => ({
+    happy: getExpressionIntensity(randomHappyEvents, seconds),
+    blink: getExpressionIntensity(randomBlinkEvents, seconds),
+  });
   testWindow.__cvideoTestGetCharacterActionAt = getCharacterActionAt;
   testWindow.__cvideoTestLoadScenarioDraft = (draft) => {
     scenarioDraft = structuredClone(draft);
@@ -956,7 +1226,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     chapterAudioGenerate.type = 'button';
     chapterAudioGenerate.className = 'chapter-audio-generate';
     chapterAudioGenerate.textContent = 'この章の音声を生成／再生成';
-    chapterAudioGenerate.disabled = voicevoxStyle.disabled || narration.value.trim().length > 1000;
+    chapterAudioGenerate.disabled = voicevoxStyle.disabled || !isVoiceStyleApproved() || narration.value.trim().length > 1000;
     const chapterAudioStatus = document.createElement('span');
     chapterAudioStatus.className = 'chapter-audio-status';
     chapterAudioStatus.setAttribute('role', 'status');
@@ -976,6 +1246,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       narration: string;
       styleId: number;
       subtitles: { startSeconds: number; endSeconds: number; text: string }[];
+      mouthTimeline: MouthShape[];
       speakerName: string;
     } | null = null;
     if (chapterAudioAsset) chapterAudioControls.dataset.audioAsset = JSON.stringify(chapterAudioAsset);
@@ -989,7 +1260,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       chapterAudio.load();
     };
     narration.addEventListener('input', () => {
-      chapterAudioGenerate.disabled = voicevoxStyle.disabled || narration.value.trim().length > 1000;
+      chapterAudioGenerate.disabled = voicevoxStyle.disabled || !isVoiceStyleApproved() || narration.value.trim().length > 1000;
       if (chapterAudioAsset || chapterAudioUrl) {
         chapterAudioAsset = null;
         delete chapterAudioControls.dataset.audioAsset;
@@ -1022,6 +1293,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           pending.styleId,
           pending.narration,
           pending.speakerName,
+          pending.mouthTimeline,
         );
         if (!result?.saved || !result.audioAsset) {
           const subtitleMessage = subtitlesApplied ? `字幕を${pending.subtitles.length}件設定しました。` : '';
@@ -1066,6 +1338,14 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         chapterAudioStatus.textContent = 'Engine接続、話者・スタイル、本文（1000文字以内）を確認してください。';
         return;
       }
+      const selectedOption = voicevoxStyle.selectedOptions[0];
+      const speakerName = selectedOption?.dataset.speakerName ?? selectedOption?.textContent ?? '話者名未記録';
+      if (!await ensureVoiceStyleApproved(voicevoxStyle.value, speakerName)) {
+        voicevoxStyle.value = confirmedVoiceStyleId ?? '';
+        refreshVoiceGenerationControls();
+        chapterAudioStatus.textContent = '話者の利用条件が未確認のため、音声を生成しませんでした。';
+        return;
+      }
       if (hasStoredAudioToReplace && !window.confirm('保存済み音声を新しい音声で置き換えますか？')) {
         chapterAudioStatus.textContent = '音声の再生成をキャンセルしました。保存済み音声は保持されています。';
         refreshChapterMaterialStatus();
@@ -1084,14 +1364,15 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           narration: text,
           styleId,
           subtitles: result.subtitles ?? [],
-          speakerName: voicevoxStyle.selectedOptions[0]?.textContent?.trim() || '話者名未記録',
+          mouthTimeline: (result.mouthTimeline ?? []) as MouthShape[],
+          speakerName: voicevoxStyle.selectedOptions[0]?.dataset.speakerName || '話者名未記録',
         };
         chapterAudioStatus.textContent = '音声を生成しました。長さを読み込んでいます...';
         setChapterAudioSource(result.audio);
       } catch {
         chapterAudioStatus.textContent = '章の音声を生成できませんでした。VOICEVOX Engineの状態を確認してください。';
       } finally {
-        chapterAudioGenerate.disabled = voicevoxStyle.disabled || narration.value.trim().length > 1000;
+        refreshVoiceGenerationControls();
       }
     });
     chapterAudioControls.append(chapterAudioGenerate, chapterAudioStatus, chapterAudio);
@@ -1518,8 +1799,13 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         chapterVideoStatus,
       );
       chapterMaterialStatus.dataset.state = audioIsStale || !chapterAudioControls.dataset.audioAsset
-        || (runCode.checked && (!savedResult || executionIsStale)) ? 'needs-attention' : 'ready';
+        || ['stale', 'warning'].includes(subtitleSourceStatus.dataset.state ?? '')
+        || !subtitleList.querySelector('.subtitle-row')
+        || chapterVideoStatus.dataset.state !== 'ready'
+        || (runCode.checked && (!savedResult || executionIsStale || savedResult.status !== 'success'))
+        ? 'needs-attention' : 'ready';
     };
+    fieldset.addEventListener('chapter-video-state-change', refreshChapterMaterialStatus);
     const markChapterVideoStale = () => {
       chapterVideoStatus.textContent = '動画: 要更新';
       chapterVideoStatus.dataset.state = 'stale';
@@ -1913,7 +2199,9 @@ scenarioForm.addEventListener('submit', async (event) => {
 
   scenarioGenerateButton.disabled = true;
   scenarioConfirmButton.disabled = true;
-  scenarioMessage.textContent = 'Copilot SDKでシナリオを生成しています...';
+  scenarioMessage.textContent = scenarioAiProvider === 'company-api'
+    ? '会社APIでシナリオを生成しています...'
+    : 'Copilot SDKでシナリオを生成しています...';
   scenarioReviewState.textContent = '生成中';
   try {
     const outcome = await window.scenarioApi.generate(inputResult.data, scenarioDraft);
@@ -1954,6 +2242,7 @@ scenarioConfirmButton.addEventListener('click', () => {
   }
   scenarioDraft = parsedDraft;
   confirmedScenario = structuredClone(parsedDraft);
+  scenarioHasUnsavedChanges = true;
   scenarioReviewState.textContent = '確認済み';
   scenarioMessage.textContent = 'この内容を確認済みにしました。プロジェクト保存はまだ行われていません。';
   scenarioConfirmButton.disabled = true;
@@ -2040,6 +2329,8 @@ scenarioOpenButton.addEventListener('click', async () => {
       ? '保存中断を検出し、前回保存時点の内容へ復旧しました。内容を確認してから編集を続けてください。'
       : 'プロジェクトを読み込みました。内容を確認し、必要なら編集してから確定してください。';
     if (result.modelAsset) {
+      activeModelStorageMode = result.modelAsset.storageMode;
+      pendingModelStorageMode = result.modelAsset.storageMode;
       const restoredBytes = new ArrayBuffer(result.modelAsset.bytes.byteLength);
       new Uint8Array(restoredBytes).set(result.modelAsset.bytes);
       const restoredFile = new File([restoredBytes], result.modelAsset.fileName, { type: 'model/gltf-binary' });
@@ -2089,26 +2380,40 @@ loader.register((parser) => new VRMLoaderPlugin(parser));
 loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
 
 type MouthShape = { start: number; end: number; expression: string };
+type ExpressionEvent = { start: number; end: number; intensity: number };
+type ArmRestPoseEntry = { bone: THREE.Object3D; rotation: THREE.Euler; zOffset: number };
 const mouthExpressions = ['aa', 'ih', 'ou', 'ee', 'oh'];
-const modelFacingOffset = Math.PI;
+const modelFacingOffset = -Math.PI / 6;
 let activeVrm: VRM | undefined;
 let activeMixer: THREE.AnimationMixer | undefined;
 let activeMouthTimeline: MouthShape[] = [];
+let randomBlinkEvents: ExpressionEvent[] = [];
+let randomHappyEvents: ExpressionEvent[] = [];
+let armRestPose: ArmRestPoseEntry[] = [];
+let baselineArmHandHeights: { left: number | null; right: number | null } = { left: null, right: null };
+let modelLoadGeneration = 0;
 const previousCharacterActionOffset = new THREE.Euler();
 let previousCharacterHappyValue: number | null = null;
 
 function clearActiveModel() {
+  modelLoadGeneration += 1;
   activeMixer?.stopAllAction();
   activeMixer = undefined;
   if (activeVrm) scene.remove(activeVrm.scene);
   activeVrm = undefined;
   activeModelFile = undefined;
+  activeModelStorageMode = 'copy';
+  pendingModelStorageMode = undefined;
   fileInput.value = '';
   motionInput.value = '';
   motionInput.disabled = true;
   mouthTimelineInput.value = '';
   mouthTimelineInput.disabled = true;
   activeMouthTimeline = [];
+  randomBlinkEvents = [];
+  randomHappyEvents = [];
+  armRestPose = [];
+  baselineArmHandHeights = { left: null, right: null };
   captureButton.disabled = true;
   sequenceButton.disabled = true;
   benchmarkButton.disabled = true;
@@ -2119,6 +2424,55 @@ function clearActiveModel() {
   modelReadout.textContent = 'モデル: --';
   mouthReadout.textContent = '口形: --';
   renderAt(Number(timeline.value));
+}
+
+function createRandomExpressionEvents(
+  seed: number,
+  intervalMin: number,
+  intervalMax: number,
+  durationMin: number,
+  durationMax: number,
+  intensityMin: number,
+  intensityMax: number,
+) {
+  let state = seed >>> 0;
+  const random = () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+  const events: ExpressionEvent[] = [];
+  let start = random() * intervalMax;
+  while (start < 3600) {
+    const duration = durationMin + random() * (durationMax - durationMin);
+    const intensity = intensityMin + random() * (intensityMax - intensityMin);
+    events.push({ start, end: start + duration, intensity });
+    start += intervalMin + random() * (intervalMax - intervalMin);
+  }
+  return events;
+}
+
+function getExpressionIntensity(events: ExpressionEvent[], seconds: number) {
+  const activeEvent = events.find((event) => seconds >= event.start && seconds < event.end);
+  return activeEvent?.intensity ?? 0;
+}
+
+function applyCharacterArmRestPose() {
+  for (const entry of armRestPose) {
+    entry.bone.rotation.copy(entry.rotation);
+    entry.bone.rotation.z += entry.zOffset;
+  }
+}
+
+function getSelectedChapterMouthTimeline() {
+  const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
+  const assetJson = selectedChapter?.querySelector<HTMLDivElement>('.chapter-audio-controls')?.dataset.audioAsset;
+  if (!assetJson) return null;
+  try {
+    const asset = JSON.parse(assetJson) as { mouthTimeline?: MouthShape[] };
+    return Array.isArray(asset.mouthTimeline) ? asset.mouthTimeline : null;
+  } catch {
+    return null;
+  }
 }
 
 function getCharacterActionAt(seconds: number) {
@@ -2146,15 +2500,12 @@ function renderAt(seconds: number) {
       head.rotation.z -= previousCharacterActionOffset.z;
     }
     previousCharacterActionOffset.set(0, 0, 0);
-    activeVrm.scene.rotation.y = modelFacingOffset + (activeMixer ? 0 : seconds * 0.35);
-    if (activeMixer) {
-      activeMixer.setTime(seconds);
-    } else {
-      const phase = ((seconds % 3) + 3) % 3;
-      activeVrm.expressionManager?.setValue('happy', phase < 1 ? 0.65 : 0);
-      activeVrm.expressionManager?.setValue('aa', phase >= 1 && phase < 2 ? 1 : 0);
-      activeVrm.expressionManager?.setValue('blink', phase >= 2.7 ? 1 : 0);
-    }
+    activeVrm.scene.rotation.y = modelFacingOffset;
+    applyCharacterArmRestPose();
+    activeMixer?.setTime(seconds);
+    const baselineHappy = getExpressionIntensity(randomHappyEvents, seconds);
+    activeVrm.expressionManager?.setValue('happy', baselineHappy);
+    activeVrm.expressionManager?.setValue('blink', getExpressionIntensity(randomBlinkEvents, seconds));
     const characterAction = getCharacterActionAt(seconds);
     const actionElapsed = characterAction ? seconds - characterAction.atSeconds : Number.POSITIVE_INFINITY;
     const actionDuration = 1.2;
@@ -2177,8 +2528,10 @@ function renderAt(seconds: number) {
         activeVrm.expressionManager?.setValue('happy', 0.8 * intensity);
       }
     }
-    if (activeMouthTimeline.length > 0) {
-      const mouthShape = activeMouthTimeline.find((entry) => seconds >= entry.start && seconds < entry.end);
+    const chapterMouthTimeline = getSelectedChapterMouthTimeline();
+    const mouthTimeline = activeMouthTimeline.length > 0 ? activeMouthTimeline : chapterMouthTimeline ?? [];
+    if (mouthTimeline.length > 0 || chapterMouthTimeline) {
+      const mouthShape = mouthTimeline.find((entry) => seconds >= entry.start && seconds < entry.end);
       for (const expression of mouthExpressions) {
         activeVrm.expressionManager?.setValue(expression, expression === mouthShape?.expression ? 0.9 : 0);
       }
@@ -2190,17 +2543,26 @@ function renderAt(seconds: number) {
 }
 
 function renderCompositionAt(seconds: number) {
-  syncCodeStagePreviews(seconds);
-  syncSubtitlePreview(seconds);
-  renderAt(seconds);
+  const frameSeconds = Math.round(seconds * 30) / 30;
+  syncCodeStagePreviews(frameSeconds);
+  syncSubtitlePreview(frameSeconds);
+  renderAt(frameSeconds);
 }
 
 function setResult(message: string) {
   resultReadout.textContent = message;
 }
 
-async function persistModelFile(file: File, contents?: ArrayBuffer) {
+async function persistModelFile(file: File, contents?: ArrayBuffer): Promise<{
+  saved: boolean;
+  unavailable?: boolean;
+  modelAsset?: { fileName: string; storageMode?: 'copy' | 'external' };
+  message?: string;
+} | undefined> {
   if (!window.scenarioApi) return undefined;
+  if (activeModelStorageMode === 'external') {
+    return { saved: true, modelAsset: { fileName: file.name, storageMode: 'external' } };
+  }
   try {
     return await window.scenarioApi.saveModel(file.name, new Uint8Array(contents ?? await file.arrayBuffer()));
   } catch {
@@ -2222,9 +2584,44 @@ function saveBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+externalModelButton.addEventListener('click', async () => {
+  if (!window.scenarioApi) {
+    scenarioMessage.textContent = '外部VRMの参照はElectronアプリ内で利用できます。';
+    return;
+  }
+  externalModelButton.disabled = true;
+  try {
+    const result = await window.scenarioApi.selectExternalModel();
+    if (!result.selected || !result.modelAsset || !result.bytes) {
+      scenarioMessage.textContent = result.message ?? '外部VRMを選択できませんでした。';
+      return;
+    }
+    const restoredBytes = new ArrayBuffer(result.bytes.byteLength);
+    new Uint8Array(restoredBytes).set(result.bytes);
+    const file = new File([restoredBytes], result.modelAsset.fileName, { type: 'model/gltf-binary' });
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    pendingModelStorageMode = 'external';
+    fileInput.files = transfer.files;
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    scenarioMessage.textContent = '外部VRMを参照しました。元ファイルを移動・削除すると、再選択が必要です。';
+  } finally {
+    externalModelButton.disabled = false;
+  }
+});
+
 fileInput.addEventListener('change', async () => {
   const file = fileInput.files?.[0];
   if (!file) return;
+  const loadGeneration = ++modelLoadGeneration;
+  if (!await requestMaterialTermsConfirmation('VRMモデル', file.name)) {
+    pendingModelStorageMode = undefined;
+    fileInput.value = '';
+    setResult(`利用条件が未確認のため、VRMモデル「${file.name}」の読み込みをキャンセルしました。`);
+    return;
+  }
+  activeModelStorageMode = pendingModelStorageMode ?? 'copy';
+  pendingModelStorageMode = undefined;
 
   runtimeStatus.textContent = '読み込み中';
   runtimeStatus.dataset.state = 'loading';
@@ -2234,6 +2631,7 @@ fileInput.addEventListener('change', async () => {
     const gltf = await new Promise<{ userData: { vrm?: VRM } }>((resolve, reject) => {
       loader.parse(buffer, '', resolve, reject);
     });
+    if (loadGeneration !== modelLoadGeneration) return;
     const loadedVrm = gltf.userData.vrm;
     if (!loadedVrm) throw new Error('VRM拡張情報が見つかりません。VRM 1.0ファイルを選択してください。');
 
@@ -2244,24 +2642,48 @@ fileInput.addEventListener('change', async () => {
     if (activeVrm) scene.remove(activeVrm.scene);
     activeVrm = loadedVrm;
     activeModelFile = file;
+    markAllChapterVideosStale();
     scene.add(activeVrm.scene);
+    activeVrm.scene.updateMatrixWorld(true);
+    const leftHand = activeVrm.humanoid.getNormalizedBoneNode('leftHand');
+    const rightHand = activeVrm.humanoid.getNormalizedBoneNode('rightHand');
+    baselineArmHandHeights = {
+      left: leftHand?.getWorldPosition(new THREE.Vector3()).y ?? null,
+      right: rightHand?.getWorldPosition(new THREE.Vector3()).y ?? null,
+    };
+    armRestPose = (['leftUpperArm', 'rightUpperArm'] as const).flatMap((boneName) => {
+      const bone = activeVrm?.humanoid.getNormalizedBoneNode(boneName);
+      if (!bone) return [];
+      return [{
+        bone,
+        rotation: bone.rotation.clone(),
+        zOffset: boneName === 'leftUpperArm' ? 1.15 : -1.15,
+      }];
+    });
     motionInput.disabled = false;
     motionInput.value = '';
     mouthTimelineInput.disabled = false;
     mouthTimelineInput.value = '';
     activeMouthTimeline = [];
+    const expressionSeed = Math.floor(Math.random() * 0x1_0000_0000);
+    randomBlinkEvents = createRandomExpressionEvents(expressionSeed, 2.8, 5.5, 0.08, 0.16, 0.85, 1);
+    randomHappyEvents = createRandomExpressionEvents(expressionSeed ^ 0x9e3779b9, 5, 12, 0.6, 1.8, 0.25, 0.7);
     mouthReadout.textContent = '口形: --';
 
     const bounds = new THREE.Box3().setFromObject(activeVrm.scene);
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
     const height = Math.max(size.y, 0.5);
-    controls.target.set(center.x, center.y, center.z);
-    camera.position.set(center.x, center.y + height * 0.08, center.z - height * 2.65);
+    const rightCompositionOffset = height * 0.28;
+    controls.target.set(center.x + rightCompositionOffset, center.y, center.z);
+    camera.position.set(center.x + rightCompositionOffset, center.y + height * 0.08, center.z - height * 2.65);
     camera.near = Math.max(height / 1000, 0.01);
     camera.far = height * 20;
     camera.updateProjectionMatrix();
     controls.update();
+    controls.enableRotate = false;
+    controls.enablePan = false;
+    controls.enableZoom = false;
 
     emptyState.hidden = true;
     captureButton.disabled = false;
@@ -2275,10 +2697,12 @@ fileInput.addEventListener('change', async () => {
     const expressions = activeVrm.expressionManager?.expressions.map((expression) => expression.expressionName) ?? [];
     const modelMessage = expressions.length > 0 ? `利用可能な表情: ${expressions.join(', ')}` : 'このモデルに表情プリセットはありません。';
     const savedModel = await persistModelFile(file, buffer);
-    if (savedModel?.saved) setResult(`${modelMessage} VRMモデルをプロジェクトにコピーしました。`);
+    if (savedModel?.saved && activeModelStorageMode === 'external') setResult(`${modelMessage} プロジェクト外のVRMを参照しています。`);
+    else if (savedModel?.saved) setResult(`${modelMessage} VRMモデルをプロジェクトにコピーしました。`);
     else if (savedModel && !savedModel.unavailable) setResult(`${modelMessage} ${savedModel.message ?? ''}`);
     else setResult(modelMessage);
   } catch (error) {
+    if (loadGeneration !== modelLoadGeneration) return;
     runtimeStatus.textContent = '読み込み失敗';
     runtimeStatus.dataset.state = 'error';
     setResult('VRMモデルを読み込めませんでした。VRM 1.0形式で破損していないファイルを選び直して再試行してください。');
@@ -2288,6 +2712,11 @@ fileInput.addEventListener('change', async () => {
 motionInput.addEventListener('change', async () => {
   const file = motionInput.files?.[0];
   if (!file || !activeVrm) return;
+  if (!await requestMaterialTermsConfirmation('VRMAモーション', file.name)) {
+    motionInput.value = '';
+    setResult(`利用条件が未確認のため、VRMAモーション「${file.name}」の読み込みをキャンセルしました。`);
+    return;
+  }
 
   try {
     const buffer = await file.arrayBuffer();
@@ -2301,6 +2730,7 @@ motionInput.addEventListener('change', async () => {
     const clip = createVRMAnimationClip(animation, activeVrm);
     activeMixer = new THREE.AnimationMixer(activeVrm.scene);
     activeMixer.clipAction(clip).play();
+    markAllChapterVideosStale();
     renderAt(Number(timeline.value));
     setResult(`VRMA読込完了: ${file.name} / ${clip.duration.toFixed(2)} 秒`);
   } catch (error) {
@@ -2333,6 +2763,7 @@ mouthTimelineInput.addEventListener('change', async () => {
     }
 
     activeMouthTimeline = [...timelineEntries].sort((left, right) => left.start - right.start);
+    markAllChapterVideosStale();
     renderAt(Number(timeline.value));
     setResult(`口パク時刻表読込完了: ${activeMouthTimeline.length}区間`);
   } catch (error) {

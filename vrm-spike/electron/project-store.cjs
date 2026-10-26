@@ -99,15 +99,36 @@ function getAudioAsset(fileBytes, scenario) {
     || typeof scenario?.narration !== 'string'
   ) return null;
   const audioAsset = scenario.audioAsset;
+  const mouthTimeline = audioAsset?.mouthTimeline ?? [];
   if (
     audioAsset?.path !== 'audio/narration.wav'
     || !Number.isFinite(audioAsset.durationSeconds)
     || audioAsset.durationSeconds <= 0
     || !Number.isSafeInteger(audioAsset.styleId)
     || !/^[a-f0-9]{64}$/.test(audioAsset.narrationHash)
+    || !isValidMouthTimeline(mouthTimeline, audioAsset.durationSeconds)
   ) return null;
   const narrationHash = createHash('sha256').update(scenario.narration, 'utf8').digest('hex');
-  return narrationHash === audioAsset.narrationHash ? audioAsset : null;
+  return narrationHash === audioAsset.narrationHash
+    ? { ...audioAsset, mouthTimeline }
+    : null;
+}
+
+function isValidMouthTimeline(mouthTimeline, durationSeconds) {
+  if (!Array.isArray(mouthTimeline) || mouthTimeline.length > 10_000) return false;
+  let previousEnd = 0;
+  return mouthTimeline.every((cue) => {
+    if (
+      !Number.isFinite(cue?.start)
+      || cue.start < previousEnd
+      || !Number.isFinite(cue?.end)
+      || cue.end <= cue.start
+      || cue.end > durationSeconds
+      || !['aa', 'ih', 'ou', 'ee', 'oh'].includes(cue.expression)
+    ) return false;
+    previousEnd = cue.end;
+    return true;
+  });
 }
 
 async function saveScenarioProject(projectDirectory, request, draft) {
@@ -197,17 +218,23 @@ async function saveScenarioProject(projectDirectory, request, draft) {
 }
 
 function isValidProjectModelAsset(modelAsset) {
-  return typeof modelAsset?.path === 'string'
-    && /^assets\/models\/[a-f0-9]{64}\.vrm$/.test(modelAsset.path)
-    && modelAsset.path === `assets/models/${modelAsset.sha256}.vrm`
-    && typeof modelAsset.fileName === 'string'
+  const validMetadata = typeof modelAsset?.fileName === 'string'
     && modelAsset.fileName.length > 0
+    && /^[a-f0-9]{64}$/.test(modelAsset.sha256)
     && Number.isSafeInteger(modelAsset.sizeBytes)
     && modelAsset.sizeBytes >= 12
     && modelAsset.sizeBytes <= MAX_MODEL_BYTES;
+  if (!validMetadata) return false;
+  if (modelAsset.storageMode === 'external') {
+    return typeof modelAsset.sourcePath === 'string' && path.isAbsolute(modelAsset.sourcePath);
+  }
+  return (modelAsset.storageMode === undefined || modelAsset.storageMode === 'copy')
+    && typeof modelAsset.path === 'string'
+    && /^assets\/models\/[a-f0-9]{64}\.vrm$/.test(modelAsset.path)
+    && modelAsset.path === `assets/models/${modelAsset.sha256}.vrm`;
 }
 
-async function saveProjectModel(projectDirectory, fileName, modelBytes) {
+function createModelMetadata(fileName, modelBytes) {
   const bytes = Buffer.from(modelBytes);
   if (
     bytes.length < 12
@@ -217,26 +244,57 @@ async function saveProjectModel(projectDirectory, fileName, modelBytes) {
     || fileName.trim().length === 0
   ) throw new Error('Invalid VRM model asset.');
 
+  return {
+    fileName: path.basename(fileName.trim()).slice(0, 255),
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    sizeBytes: bytes.length,
+  };
+}
+
+async function saveProjectModel(projectDirectory, fileName, modelBytes) {
+  const bytes = Buffer.from(modelBytes);
+  const metadata = createModelMetadata(fileName, bytes);
   const projectPath = path.join(projectDirectory, 'project.json');
   const project = JSON.parse(await fs.readFile(projectPath, 'utf8'));
   if (project?.schemaVersion !== 1 || !Array.isArray(project.chapters)) {
     throw new Error('Invalid project manifest.');
   }
 
-  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const { sha256 } = metadata;
   const relativePath = `assets/models/${sha256}.vrm`;
   const modelPath = path.join(projectDirectory, ...relativePath.split('/'));
   await fs.mkdir(path.dirname(modelPath), { recursive: true });
   await writeBytesAtomically(modelPath, bytes);
 
   const modelAsset = {
+    ...metadata,
+    storageMode: 'copy',
     path: relativePath,
-    fileName: path.basename(fileName.trim()).slice(0, 255),
-    sha256,
-    sizeBytes: bytes.length,
   };
   await writeJsonAtomically(projectPath, { ...project, modelAsset });
   return modelAsset;
+}
+
+async function saveExternalProjectModel(projectDirectory, sourcePath) {
+  if (typeof sourcePath !== 'string' || !path.isAbsolute(sourcePath)) {
+    throw new Error('Invalid external VRM model path.');
+  }
+  const resolvedPath = await fs.realpath(sourcePath);
+  const bytes = await fs.readFile(resolvedPath);
+  const metadata = createModelMetadata(path.basename(resolvedPath), bytes);
+  const projectPath = path.join(projectDirectory, 'project.json');
+  const project = JSON.parse(await fs.readFile(projectPath, 'utf8'));
+  if (project?.schemaVersion !== 1 || !Array.isArray(project.chapters)) {
+    throw new Error('Invalid project manifest.');
+  }
+
+  const modelAsset = {
+    ...metadata,
+    storageMode: 'external',
+    sourcePath: resolvedPath,
+  };
+  await writeJsonAtomically(projectPath, { ...project, modelAsset });
+  return { ...modelAsset, bytes: new Uint8Array(bytes) };
 }
 
 async function loadScenarioProject(projectDirectory) {
@@ -283,14 +341,21 @@ async function loadScenarioProject(projectDirectory) {
     if (!isValidProjectModelAsset(project.modelAsset)) {
       modelAssetMissing = true;
     } else {
-      const modelPath = path.join(projectDirectory, ...project.modelAsset.path.split('/'));
+      const modelPath = project.modelAsset.storageMode === 'external'
+        ? project.modelAsset.sourcePath
+        : path.join(projectDirectory, ...project.modelAsset.path.split('/'));
       try {
         const bytes = await fs.readFile(modelPath);
         const sha256 = createHash('sha256').update(bytes).digest('hex');
         if (bytes.length !== project.modelAsset.sizeBytes || sha256 !== project.modelAsset.sha256) {
           modelAssetMissing = true;
         } else {
-          modelAsset = { fileName: project.modelAsset.fileName, bytes: new Uint8Array(bytes) };
+          modelAsset = {
+            fileName: project.modelAsset.fileName,
+            storageMode: project.modelAsset.storageMode ?? 'copy',
+            sourcePath: project.modelAsset.sourcePath,
+            bytes: new Uint8Array(bytes),
+          };
         }
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
@@ -339,6 +404,7 @@ async function saveChapterAudio(projectDirectory, chapterIndex, audio, details) 
     || (details.speakerName !== undefined && (typeof details.speakerName !== 'string' || details.speakerName.trim().length === 0 || details.speakerName.length > 100))
     || typeof details?.narration !== 'string'
     || details.narration !== scenario.narration
+    || !isValidMouthTimeline(details.mouthTimeline ?? [], details.durationSeconds)
   ) {
     throw new Error('Invalid audio asset.');
   }
@@ -349,6 +415,7 @@ async function saveChapterAudio(projectDirectory, chapterIndex, audio, details) 
     styleId: details.styleId,
     speakerName: details.speakerName?.trim() || '話者名未記録',
     narrationHash: createHash('sha256').update(details.narration, 'utf8').digest('hex'),
+    mouthTimeline: details.mouthTimeline ?? [],
   };
   const audioPath = path.join(projectDirectory, 'chapters', id, 'audio', 'narration.wav');
   await fs.mkdir(path.dirname(audioPath), { recursive: true });
@@ -366,4 +433,11 @@ async function loadChapterAudio(projectDirectory, chapterIndex) {
   return { audioAsset, audio: new Uint8Array(fileBytes) };
 }
 
-module.exports = { loadChapterAudio, loadScenarioProject, saveChapterAudio, saveProjectModel, saveScenarioProject };
+module.exports = {
+  loadChapterAudio,
+  loadScenarioProject,
+  saveChapterAudio,
+  saveExternalProjectModel,
+  saveProjectModel,
+  saveScenarioProject,
+};

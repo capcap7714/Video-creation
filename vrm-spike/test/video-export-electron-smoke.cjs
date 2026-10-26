@@ -154,7 +154,7 @@ async function main() {
   let testDraft = draft;
   let chapterAudio = createSilentWav();
   let audioDurationSeconds = 1;
-  let speakerName = 'テスト話者 / ノーマル';
+  let speakerName = 'テスト話者';
   let synchronizationFrames;
 
   try {
@@ -163,7 +163,7 @@ async function main() {
       const synthesized = await synthesizeSpeech({ text: draft.chapters[0].narration, styleId: 2 });
       chapterAudio = Buffer.from(synthesized.audio);
       audioDurationSeconds = getWavDurationSeconds(chapterAudio);
-      speakerName = '四国めたん / ノーマル';
+      speakerName = '四国めたん';
       testDraft = {
         ...draft,
         chapters: [{ ...draft.chapters[0], subtitles: synthesized.subtitles }],
@@ -229,6 +229,18 @@ async function main() {
     });
     const window = await app.firstWindow();
     await window.waitForLoadState('load');
+    await window.evaluate(() => {
+      const dialog = document.querySelector('#material-terms-dialog');
+      const observer = new MutationObserver(() => {
+        if (!dialog.open) return;
+        const checkbox = document.querySelector('#material-terms-confirm-checkbox');
+        const approveButton = document.querySelector('#material-terms-approve');
+        checkbox.checked = true;
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        approveButton.click();
+      });
+      observer.observe(dialog, { attributes: true, attributeFilter: ['open'] });
+    });
     const rendererErrors = [];
     window.on('console', (message) => {
       if (message.type() === 'error') rendererErrors.push(message.text());
@@ -256,14 +268,24 @@ async function main() {
     if (!missingAudioOnly) {
       await window.getByText(/^保存済み音声（\d+\.\d+秒）を読み込みました。$/).waitFor({ timeout: 30_000 });
     }
+    await window.locator('#model-file').setInputFiles(path.resolve(__dirname, '../../C1.vrm'));
+    await window.getByText('VRM 1.0読込完了', { exact: true }).waitFor({ timeout: 30_000 });
+    await window.locator('#video-export-button').click();
+    await window.getByText('章を確認し、プロジェクトを保存してから書き出してください。', { exact: true }).waitFor({ timeout: 15_000 });
+    assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'unconfirmed project should preserve the existing MP4');
+    assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'unconfirmed project should preserve the existing SRT');
+
     await window.locator('#scenario-confirm-button').click();
+    await window.locator('#video-export-button').click();
+    await window.getByText('確認済みの変更が未保存です。プロジェクトを保存してから書き出してください。', { exact: true }).waitFor({ timeout: 15_000 });
+    assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'unsaved confirmed changes should preserve the existing MP4');
+    assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'unsaved confirmed changes should preserve the existing SRT');
+
     await window.locator('#scenario-save-button').click();
     await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30_000 });
     assert.deepEqual(await app.evaluate(() => globalThis.__videoExportOverwritePrompts), [
       '選択したフォルダーには既にproject.jsonがあります。上書きしますか？',
     ]);
-    await window.locator('#model-file').setInputFiles(path.resolve(__dirname, '../../C1.vrm'));
-    await window.getByText('VRM 1.0読込完了', { exact: true }).waitFor({ timeout: 30_000 });
 
     if (missingAudioOnly) {
       await window.locator('#video-export-button').click();
@@ -287,7 +309,7 @@ async function main() {
     assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - creditStartSeconds) < 0.02);
     assert.equal(await window.locator('#credit-preview').isVisible(), true);
     assert.equal(await window.locator('#credit-preview-title').innerText(), draft.chapters[0].title);
-    assert.match(await window.locator('#credit-preview-attribution').innerText(), /^VOICEVOX:/);
+    assert.equal(await window.locator('#credit-preview-attribution').innerText(), `VOICEVOX: ${speakerName}`);
     assert.equal(await window.locator('#video-code-preview').isHidden(), true);
     await window.locator('#timeline').evaluate((input) => {
       input.value = '0';
@@ -378,6 +400,7 @@ async function main() {
       };
     });
     await window.locator('#video-export-button').click();
+    await window.waitForFunction(() => window.__cvideoLastSubtitleReviewPrompt.length > 0);
     assert.match(await window.evaluate(() => window.__cvideoLastSubtitleReviewPrompt), /字幕の表示タイミングを確認しましたか/);
     assert.equal(await window.locator('#video-export-status').innerText(), '字幕タイミングを確認してから書き出してください。');
     assert.equal(await window.locator('.subtitle-start').first().evaluate((input) => document.activeElement === input), true);
@@ -388,8 +411,21 @@ async function main() {
     if (timelineSyncOnly) return;
     if (timelineSyncExportOnly) {
       console.log('Starting MP4 export for encoded-frame synchronization check');
-      await window.evaluate(() => { window.confirm = () => true; });
+        await window.evaluate(() => {
+          document.querySelector('#scenario-editor fieldset').dataset.subtitleNarrationHash = '0'.repeat(64);
+          window.__cvideoConfirmMessages = [];
+          window.confirm = (message) => {
+            window.__cvideoConfirmMessages.push(message);
+            return true;
+          };
+        });
       await window.locator('#video-export-button').click();
+        await window.waitForFunction(() => window.__cvideoConfirmMessages.some((message) => /字幕の表示タイミングを確認しましたか/.test(message)));
+        assert.equal(
+          await window.evaluate(() => window.__cvideoConfirmMessages.some((message) => /字幕の表示タイミングを確認しましたか/.test(message))),
+          true,
+          'stale subtitle timing should be presented for confirmation before export',
+        );
       await window.getByText(/MP4動画とSRT字幕を保存しました/).waitFor({ timeout: 120_000 });
       console.log('MP4 export completed; extracting the synchronized event frame');
       const encodedSubtitles = await fs.readFile(subtitlePath, 'utf8');
@@ -541,6 +577,61 @@ async function main() {
     await window.locator('#scenario-save-button').click();
     await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30_000 });
 
+    const codeStageTime = window.locator('.code-stage-time').last();
+    const originalCodeStageTime = await codeStageTime.inputValue();
+    await codeStageTime.fill((loadedAudioDurationSeconds + 1).toFixed(2));
+    await window.locator('#scenario-confirm-button').click();
+    await window.locator('#scenario-save-button').click();
+    await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30_000 });
+    await window.locator('#video-export-button').click();
+    const codeStagePreflightStatus = await window.locator('#video-export-status').innerText();
+    assert.ok(
+      codeStagePreflightStatus.includes(`コード表示段階2の時刻が音声の長さ${loadedAudioDurationSeconds.toFixed(2)}秒を超えています。`),
+      `out-of-range code stage should be rejected before export: ${codeStagePreflightStatus}`,
+    );
+    assert.equal(await codeStageTime.evaluate((input) => document.activeElement === input), true);
+    assert.ok(
+      Math.abs(Number(await window.locator('#timeline').inputValue()) - Number(await codeStageTime.inputValue())) < 0.02,
+      'preflight should seek the preview to the invalid code-stage timestamp',
+    );
+    await codeStageTime.fill(originalCodeStageTime);
+    await window.locator('#scenario-confirm-button').click();
+    await window.locator('#scenario-save-button').click();
+    await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30_000 });
+
+    const executionTime = window.locator('.execution-time');
+    const originalExecutionTime = await executionTime.inputValue();
+    await executionTime.fill((loadedAudioDurationSeconds + 1).toFixed(2));
+    await window.locator('#scenario-confirm-button').click();
+    await window.locator('#scenario-save-button').click();
+    try {
+      await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30_000 });
+    } catch (error) {
+      const saveDiagnostics = await window.evaluate(() => ({
+        message: document.querySelector('#scenario-message')?.textContent,
+        saveStatus: document.querySelector('#scenario-save-status')?.textContent,
+        reviewState: document.querySelector('#scenario-review-state')?.textContent,
+        saveDisabled: document.querySelector('#scenario-save-button')?.disabled,
+      }));
+      error.message += `; save diagnostics: ${JSON.stringify(saveDiagnostics)}`;
+      throw error;
+    }
+    await window.locator('#video-export-button').click();
+    const executionPreflightStatus = await window.locator('#video-export-status').innerText();
+    assert.ok(
+      executionPreflightStatus.includes(`C実行結果の表示時刻が音声の長さ${loadedAudioDurationSeconds.toFixed(2)}秒を超えています。`),
+      `out-of-range C-result timestamp should be rejected before export: ${executionPreflightStatus}`,
+    );
+    assert.equal(await executionTime.evaluate((input) => document.activeElement === input), true);
+    assert.ok(
+      Math.abs(Number(await window.locator('#timeline').inputValue()) - Number(await executionTime.inputValue())) < 0.02,
+      'preflight should seek the preview to the invalid C-result timestamp',
+    );
+    await executionTime.fill(originalExecutionTime);
+    await window.locator('#scenario-confirm-button').click();
+    await window.locator('#scenario-save-button').click();
+    await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30_000 });
+
     await app.evaluate(() => { globalThis.__videoExportOverwritePrompts = []; });
     await app.evaluate(() => { globalThis.__videoExportOverwriteResponse = 1; });
     await window.evaluate(() => {
@@ -556,6 +647,11 @@ async function main() {
       'C実行結果の注意を確認し、書き出しをキャンセルしました。',
     );
     assert.match(await window.evaluate(() => window.__cvideoLastPreflightWarning), /compile-error/);
+    assert.equal(
+      await window.locator('.chapter-material-status').first().getAttribute('data-state'),
+      'needs-attention',
+      'a current non-success C result should remain visible as a material warning',
+    );
     assert.deepEqual(await app.evaluate(() => globalThis.__videoExportOverwritePrompts), [], 'declining a content warning should stop before export IPC');
     assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'declining a content warning should preserve the existing MP4');
 
@@ -580,6 +676,20 @@ async function main() {
     assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'declining overwrite should preserve the previous MP4');
     assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'declining overwrite should preserve the previous SRT');
 
+    await app.evaluate(() => {
+      process.env.CVIDEO_TEST_VIDEO_EXPORT_FREE_BYTES = '0';
+      globalThis.__videoExportOverwriteResponse = 1;
+    });
+    await window.locator('#video-export-button').click();
+    await window.getByText('空き容量の警告で動画の書き出しをキャンセルしました。', { exact: true }).waitFor({ timeout: 30_000 });
+    assert.deepEqual(
+      await app.evaluate(() => globalThis.__videoExportOverwritePrompts.slice(-1)),
+      ['保存先の空き容量が書き出しサイズの目安を下回っています（空き容量 0.0 GiB、目安 0.1 GiB）。CRFエンコードのため、実際のサイズは内容により変動します。続行しますか？'],
+      'low disk space should show an advisory with the available and estimated capacity',
+    );
+    assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'declining the low-space warning should preserve the previous MP4');
+    assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'declining the low-space warning should preserve the previous SRT');
+
     await app.evaluate(() => { globalThis.__videoExportOverwriteResponse = 0; });
     await window.locator('#video-export-button').click();
     await window.waitForFunction(
@@ -600,10 +710,23 @@ async function main() {
     );
     assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'cancelled export should preserve the previous MP4');
     assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'cancelled export should preserve the previous SRT');
+    assert.deepEqual(
+      await app.evaluate(() => globalThis.__videoExportOverwritePrompts.slice(-2)),
+      [
+        '保存先の空き容量が書き出しサイズの目安を下回っています（空き容量 0.0 GiB、目安 0.1 GiB）。CRFエンコードのため、実際のサイズは内容により変動します。続行しますか？',
+        '同名のSRT字幕ファイルがあります。MP4と一緒に上書きしますか？',
+      ],
+      'accepting the low-space warning should continue to the normal output overwrite check',
+    );
+    await app.evaluate(() => { delete process.env.CVIDEO_TEST_VIDEO_EXPORT_FREE_BYTES; });
 
+    const projectBeforeFailedExport = await projectStore.loadScenarioProject(projectDirectory);
     await app.evaluate(() => { process.env.CVIDEO_TEST_VIDEO_EXPORT_FAIL_ONCE = '1'; });
     await window.locator('#video-export-button').click();
-    await window.getByText('テスト用のフレーム書き込みエラーです。', { exact: true }).waitFor({ timeout: 30_000 });
+    await window.getByText(
+      'ENOSPC: 空き容量不足で動画フレームを書き込めません。保存先の空き容量を確認して再試行してください。',
+      { exact: true },
+    ).waitFor({ timeout: 30_000 });
     await window.waitForFunction(
       () => !document.querySelector('#video-export-button')?.disabled,
       null,
@@ -611,6 +734,16 @@ async function main() {
     );
     assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'failed export should preserve the previous MP4');
     assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'failed export should preserve the previous SRT');
+    assert.equal(
+      (await fs.readdir(testDirectory)).some((entry) => entry.startsWith('.c-video-export-')),
+      false,
+      'failed export should remove its temporary working directory',
+    );
+    assert.deepEqual(
+      await projectStore.loadScenarioProject(projectDirectory),
+      projectBeforeFailedExport,
+      'failed export should preserve the saved project and its assets',
+    );
 
     await app.evaluate(() => { process.env.CVIDEO_TEST_FFMPEG_EXIT_ONCE = '1'; });
     await window.locator('#video-export-button').click();
@@ -678,9 +811,16 @@ async function main() {
     const exportStatus = await window.locator('#video-export-status').innerText();
     assert.match(exportStatus, /MP4動画とSRT字幕を保存しました/, `MP4 export did not complete successfully: ${exportStatus}`);
     assert.match(await window.locator('.chapter-video-status').first().innerText(), /動画: 最新/);
+    await window.locator('#model-file').setInputFiles({
+      name: 'C1-reselected.vrm',
+      mimeType: 'model/gltf-binary',
+      buffer: await fs.readFile(path.resolve(__dirname, '../../C1.vrm')),
+    });
+    await window.getByText('モデル: C1-reselected.vrm', { exact: false }).waitFor({ timeout: 30_000 });
+    assert.match(await window.locator('.chapter-video-status').first().innerText(), /動画: 要更新/);
     const subtitleOverwritePrompts = (await app.evaluate(() => globalThis.__videoExportOverwritePrompts))
       .filter((message) => message.includes('SRT'));
-    assert.equal(subtitleOverwritePrompts.length, 5, 'each export should request SRT overwrite confirmation');
+    assert.equal(subtitleOverwritePrompts.length, 5, 'each export reaching output replacement should request SRT overwrite confirmation');
     const video = await fs.readFile(outputPath);
     const subtitles = await fs.readFile(subtitlePath, 'utf8');
     assert.ok(video.length > 20_000, `MP4 output is unexpectedly small: ${video.length} bytes`);

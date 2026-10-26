@@ -1,19 +1,34 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage } = require('electron');
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
-const { loadChapterAudio, loadScenarioProject, saveChapterAudio, saveProjectModel, saveScenarioProject } = require('./project-store.cjs');
+const {
+  loadChapterAudio,
+  loadScenarioProject,
+  saveChapterAudio,
+  saveExternalProjectModel,
+  saveProjectModel,
+  saveScenarioProject,
+} = require('./project-store.cjs');
 const { findGcc, runCProgram } = require('./c-runner.cjs');
 const { checkFfmpeg } = require('./ffmpeg-service.cjs');
 const { formatSrt } = require('./subtitle-export.cjs');
 const { createVideoEncoder } = require('./video-export.cjs');
 const { listSpeakers, synthesizeSpeech } = require('./voicevox-service.cjs');
+const {
+  CompanyApiError,
+  requestCompanyChatCompletion,
+  verifyCompanyApiModel,
+} = require('./company-api-service.cjs');
 
 const devUrl = process.env.CVIDEO_DEV_URL || 'http://127.0.0.1:5173';
 const activeCExecutions = new Map();
 const activeVideoExports = new Map();
 const activeProjectDirectories = new Map();
 let testVideoExportFailureInjected = false;
+const VIDEO_EXPORT_ESTIMATED_BITRATE_BPS = 12_000_000;
+const VIDEO_EXPORT_STORAGE_RESERVE_BYTES = 64 * 1024 * 1024;
 app.setPath('userData', path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'CVideoToolSpike'));
 
 async function readScenarioAiProvider() {
@@ -36,6 +51,123 @@ async function writeScenarioAiProvider(provider) {
   } catch (error) {
     await fs.rm(temporaryPath, { force: true }).catch(() => {});
     throw error;
+  }
+}
+
+function getScenarioApiKeyPath() {
+  return path.join(app.getPath('userData'), 'company-api-key.bin');
+}
+
+async function readScenarioApiKey() {
+  if (!safeStorage.isEncryptionAvailable()) return null;
+  try {
+    const encryptedKey = await fs.readFile(getScenarioApiKeyPath());
+    return safeStorage.decryptString(encryptedKey);
+  } catch {
+    return null;
+  }
+}
+
+async function writeScenarioApiKey(apiKey) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('secure-storage-unavailable');
+  if (typeof apiKey !== 'string' || apiKey.trim().length < 1 || apiKey.length > 4096) {
+    throw new Error('invalid-api-key');
+  }
+  const directory = app.getPath('userData');
+  const keyPath = getScenarioApiKeyPath();
+  const temporaryPath = `${keyPath}.${randomUUID()}.tmp`;
+  const encryptedKey = safeStorage.encryptString(apiKey.trim());
+  await fs.mkdir(directory, { recursive: true });
+  try {
+    await fs.writeFile(temporaryPath, encryptedKey, { mode: 0o600 });
+    await fs.rename(temporaryPath, keyPath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function companyApiFailure(input, previousDraft, kind, detail = null) {
+  const messages = {
+    'authentication-error': '会社APIの認証に失敗しました。APIキーを確認して再試行してください。下書きは保持されています。',
+    'rate-limit': '会社APIの利用上限に達した可能性があります。時間を置いて再試行してください。下書きは保持されています。',
+    'connection-error': '会社APIに接続できませんでした。ネットワークを確認して再試行してください。下書きは保持されています。',
+    'invalid-response': '会社APIの応答形式を確認できませんでした。下書きは保持されています。',
+    'invalid-json-content': '会社APIが有効なJSONを返しませんでした。下書きは保持されています。',
+    'invalid-scenario': '会社APIのJSON応答がシナリオ項目の要件を満たしませんでした。概要を具体化して再試行してください。下書きは保持されています。',
+    'chapter-count-mismatch': '会社APIが返した章数が指定した章数と一致しませんでした。章数を減らすか、再試行してください。下書きは保持されています。',
+    'service-error': '会社APIで生成できませんでした。接続設定を確認して再試行してください。下書きは保持されています。',
+  };
+  const invalidResponseKinds = ['invalid-response', 'invalid-json-content', 'invalid-scenario', 'chapter-count-mismatch'];
+  return {
+    status: 'failed',
+    input,
+    draft: previousDraft ?? null,
+    error: {
+      kind: kind === 'authentication-error' ? 'authentication-error'
+        : kind === 'rate-limit' ? 'rate-limit'
+          : kind === 'connection-error' ? 'connection-error'
+            : invalidResponseKinds.includes(kind) ? 'invalid-response' : 'service-error',
+      message: kind === 'invalid-scenario' && detail
+        ? `${messages[kind]} 該当項目: ${detail}`
+        : messages[kind] ?? messages['service-error'],
+    },
+    canRetry: kind !== 'invalid-request',
+  };
+}
+
+async function generateCompanyScenario(input, previousDraft) {
+  try {
+    const apiKey = await readScenarioApiKey();
+    if (!apiKey) return companyApiFailure(input, previousDraft, 'authentication-error');
+
+    const companyApiTestMode = process.env.NODE_ENV === 'test' ? process.env.CVIDEO_TEST_COMPANY_API_MODE : '';
+    if (companyApiTestMode === 'success') {
+      const { ScenarioDraftSchema } = await import('../src/scenario.ts');
+      const draft = ScenarioDraftSchema.parse({
+        title: input.title,
+        chapters: Array.from({ length: input.chapterCount ?? 1 }, (_, index) => ({
+          title: `会社APIテスト章${index + 1}`,
+          learningObjective: '生成結果を確認してから採用する。',
+          targetMinutes: input.targetMinutes,
+          narration: 'これはスキーマ要件を満たすテスト用の会社API生成案です。',
+          codeExample: null,
+          runCode: false,
+        })),
+      });
+      return { status: 'draft', input, draft, requiresReview: true };
+    }
+
+    const { ScenarioDraftSchema, createScenarioPrompt } = await import('../src/scenario.ts');
+    const { prompt } = createScenarioPrompt(input);
+    const content = companyApiTestMode === 'invalid-scenario'
+      ? JSON.stringify({ title: input.title, chapters: [] })
+      : await requestCompanyChatCompletion(apiKey, prompt);
+    let response;
+    try {
+      response = JSON.parse(content);
+    } catch {
+      throw new CompanyApiError('invalid-json-content');
+    }
+    const parsedDraft = ScenarioDraftSchema.safeParse(response);
+    if (!parsedDraft.success) {
+      const issuePaths = parsedDraft.error.issues.slice(0, 3)
+        .map((issue) => issue.path.length ? issue.path.map(String).join('.') : 'root')
+        .join(', ')
+        .slice(0, 180);
+      throw new CompanyApiError('invalid-scenario', null, issuePaths);
+    }
+    if (input.chapterCount !== undefined && parsedDraft.data.chapters.length !== input.chapterCount) {
+      throw new CompanyApiError('chapter-count-mismatch');
+    }
+    return { status: 'draft', input, draft: parsedDraft.data, requiresReview: true };
+  } catch (error) {
+    return companyApiFailure(
+      input,
+      previousDraft,
+      error instanceof CompanyApiError ? error.kind : 'service-error',
+      error instanceof CompanyApiError ? error.detail : null,
+    );
   }
 }
 
@@ -81,6 +213,15 @@ function createTestSubtitles(text) {
   }));
 }
 
+function createTestMouthTimeline() {
+  return [
+    { start: 0.1, end: 0.35, expression: 'aa' },
+    { start: 0.45, end: 0.65, expression: 'ih' },
+    { start: 2.1, end: 2.35, expression: 'ou' },
+    { start: 2.45, end: 2.65, expression: 'ee' },
+  ];
+}
+
 async function checkOutputDirectoryWritable(directory) {
   let probeDirectory;
   try {
@@ -93,7 +234,33 @@ async function checkOutputDirectoryWritable(directory) {
   }
 }
 
-ipcMain.handle('voicevox:list-speakers', async () => {
+async function getAvailableBytes(directory) {
+  if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VIDEO_EXPORT_FREE_BYTES !== undefined) {
+    const testBytes = Number(process.env.CVIDEO_TEST_VIDEO_EXPORT_FREE_BYTES);
+    if (Number.isSafeInteger(testBytes) && testBytes >= 0) return testBytes;
+  }
+  try {
+    const { bavail, bsize } = await fs.statfs(directory);
+    const availableBytes = bavail * bsize;
+    return Number.isSafeInteger(availableBytes) && availableBytes >= 0 ? availableBytes : null;
+  } catch {
+    return null;
+  }
+}
+
+function estimateVideoExportBytes(durationSeconds, audioBytes, subtitles) {
+  const encodedDurationSeconds = durationSeconds + 3;
+  const videoAndAudioBytes = encodedDurationSeconds * (VIDEO_EXPORT_ESTIMATED_BITRATE_BPS + 192_000) / 8;
+  return Math.ceil(
+    videoAndAudioBytes + audioBytes.byteLength + Buffer.byteLength(subtitles) + VIDEO_EXPORT_STORAGE_RESERVE_BYTES,
+  );
+}
+
+function formatGiB(bytes) {
+  return `${(bytes / (1024 ** 3)).toFixed(1)} GiB`;
+}
+
+async function getVoicevoxStatus() {
   if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VOICEVOX_MODE === 'offline') {
     return { connected: false, speakers: [], message: 'VOICEVOX Engineに接続できません。Engineを起動してから再試行してください。' };
   }
@@ -122,9 +289,78 @@ ipcMain.handle('voicevox:list-speakers', async () => {
       message: error instanceof Error ? error.message : 'VOICEVOX Engineに接続できません。',
     };
   }
-});
+}
+
+ipcMain.handle('voicevox:list-speakers', async () => getVoicevoxStatus());
 
 ipcMain.handle('video:check-ffmpeg', async () => checkFfmpeg());
+
+async function checkDependencySummary() {
+  if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_DEPENDENCY_SUMMARY === '1') {
+    return {
+      ffmpeg: { available: true, detail: 'H.264/AACエンコーダーを検出しました。' },
+      voicevox: { available: false, detail: 'Engineに接続できません。' },
+      gcc: { available: false, detail: 'GCCが見つかりません。' },
+      nodeVersion: 'test',
+    };
+  }
+
+  const [ffmpegResult, voicevoxResult, gccResult] = await Promise.allSettled([
+    checkFfmpeg(),
+    getVoicevoxStatus(),
+    findGcc(),
+  ]);
+  const ffmpegAvailable = ffmpegResult.status === 'fulfilled' && ffmpegResult.value.available;
+  const voicevoxStyles = voicevoxResult.status === 'fulfilled'
+    ? voicevoxResult.value.speakers.reduce((count, speaker) => count + speaker.styles.length, 0)
+    : 0;
+  const voicevoxAvailable = voicevoxResult.status === 'fulfilled'
+    && voicevoxResult.value.connected
+    && voicevoxStyles > 0;
+  const gccAvailable = gccResult.status === 'fulfilled' && Boolean(gccResult.value);
+
+  return {
+    ffmpeg: {
+      available: ffmpegAvailable,
+      detail: ffmpegResult.status === 'fulfilled'
+        ? ffmpegResult.value.message
+        : 'FFmpegの確認に失敗しました。',
+    },
+    voicevox: {
+      available: voicevoxAvailable,
+      detail: voicevoxResult.status !== 'fulfilled'
+        ? 'VOICEVOX Engineの確認に失敗しました。'
+        : !voicevoxResult.value.connected
+          ? voicevoxResult.value.message ?? 'Engineに接続できません。'
+          : voicevoxAvailable
+            ? `${voicevoxStyles}種類の話者スタイルを利用できます。`
+            : 'Engineに利用可能な話者スタイルがありません。',
+    },
+    gcc: {
+      available: gccAvailable,
+      detail: gccAvailable ? 'Cコンパイラーを検出しました。' : 'GCCが見つかりません。',
+    },
+    nodeVersion: process.versions.node ?? '不明',
+  };
+}
+
+ipcMain.handle('environment:check-dependencies', async () => checkDependencySummary());
+
+ipcMain.handle('environment:copy-diagnostic-info', async () => {
+  const dependencies = await checkDependencySummary();
+  const report = [
+    'C言語学習動画ツール 環境情報',
+    `アプリ: v${app.getVersion()}`,
+    `OS: ${process.platform} ${os.release()} (${process.arch})`,
+    `Electron: v${process.versions.electron ?? '不明'}`,
+    `Node.js: v${dependencies.nodeVersion}`,
+    `FFmpeg: ${dependencies.ffmpeg.available ? '利用可能' : '要対応'}`,
+    `VOICEVOX Engine: ${dependencies.voicevox.available ? '利用可能' : '要対応'}`,
+    `MSYS2 / GCC: ${dependencies.gcc.available ? '利用可能' : '要対応'}`,
+  ].join('\n');
+  clipboard.writeText(report);
+  return { copied: true };
+});
 
 ipcMain.handle('scenario:get-ai-provider', async () => ({ provider: await readScenarioAiProvider() }));
 
@@ -137,6 +373,55 @@ ipcMain.handle('scenario:set-ai-provider', async (_event, provider) => {
     return { saved: true, provider };
   } catch {
     return { saved: false, provider: await readScenarioAiProvider(), message: 'AIプロバイダー設定を保存できませんでした。' };
+  }
+});
+
+ipcMain.handle('scenario:get-company-api-key-status', async () => ({
+  available: safeStorage.isEncryptionAvailable(),
+  configured: Boolean(await readScenarioApiKey()),
+}));
+
+ipcMain.handle('scenario:set-company-api-key', async (_event, apiKey) => {
+  try {
+    await writeScenarioApiKey(apiKey);
+    return { saved: true, configured: true, message: 'APIキーをOS保護ストレージへ保存しました。' };
+  } catch (error) {
+    const message = error?.message === 'secure-storage-unavailable'
+      ? 'この環境ではOS保護ストレージを利用できません。APIキーは保存されていません。'
+      : error?.message === 'invalid-api-key'
+        ? 'APIキーを確認してください。空欄または長すぎるキーは保存できません。'
+        : 'APIキーを安全に保存できませんでした。';
+    return { saved: false, configured: Boolean(await readScenarioApiKey()), message };
+  }
+});
+
+ipcMain.handle('scenario:delete-company-api-key', async () => {
+  try {
+    await fs.rm(getScenarioApiKeyPath(), { force: true });
+    return { deleted: true, configured: false, message: '保存済みAPIキーを削除しました。' };
+  } catch {
+    return { deleted: false, configured: Boolean(await readScenarioApiKey()), message: 'APIキーを削除できませんでした。' };
+  }
+});
+
+ipcMain.handle('scenario:verify-company-api', async () => {
+  const apiKey = await readScenarioApiKey();
+  if (!apiKey) return { verified: false, message: '先にAPIキーを保存してください。' };
+  if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_COMPANY_API_MODE === 'success') {
+    return { verified: true, message: '会社APIとモデルを確認しました。' };
+  }
+  try {
+    await verifyCompanyApiModel(apiKey);
+    return { verified: true, message: '会社APIとモデルを確認しました。' };
+  } catch (error) {
+    const message = error instanceof CompanyApiError && error.kind === 'authentication-error'
+      ? '会社APIの認証に失敗しました。APIキーを確認してください。'
+      : error instanceof CompanyApiError && error.kind === 'connection-error'
+        ? '会社APIに接続できません。ネットワークを確認してください。'
+        : error instanceof CompanyApiError && error.kind === 'model-unavailable'
+          ? 'APIキーからgpt-6-lunaを利用できることを確認できませんでした。'
+          : '会社APIの接続を確認できませんでした。';
+    return { verified: false, message };
   }
 });
 
@@ -199,6 +484,18 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
       started: false,
       message: '保存先フォルダーに書き込めません。アクセス権と空き容量を確認し、別のフォルダーを選んでください。',
     };
+  }
+  const availableBytes = await getAvailableBytes(path.dirname(outputPath));
+  const estimatedOutputBytes = estimateVideoExportBytes(chapter.audioAsset.durationSeconds, audio, subtitles);
+  if (availableBytes !== null && availableBytes < estimatedOutputBytes) {
+    const warning = await dialog.showMessageBox(owner, {
+      type: 'warning',
+      buttons: ['続行', 'キャンセル'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `保存先の空き容量が書き出しサイズの目安を下回っています（空き容量 ${formatGiB(availableBytes)}、目安 ${formatGiB(estimatedOutputBytes)}）。CRFエンコードのため、実際のサイズは内容により変動します。続行しますか？`,
+    });
+    if (warning.response !== 0) return { started: false, cancelled: true, message: '空き容量の警告で動画の書き出しをキャンセルしました。' };
   }
   try {
     await fs.access(subtitlePath);
@@ -267,7 +564,10 @@ ipcMain.handle('video:export-frame', async (event, payload = {}) => {
   }
   if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VIDEO_EXPORT_FAIL_ONCE === '1' && !testVideoExportFailureInjected) {
     testVideoExportFailureInjected = true;
-    return { written: false, message: 'テスト用のフレーム書き込みエラーです。' };
+    return {
+      written: false,
+      message: 'ENOSPC: 空き容量不足で動画フレームを書き込めません。保存先の空き容量を確認して再試行してください。',
+    };
   }
   try {
     await session.encoder.writeFrame(payload.frame);
@@ -350,11 +650,16 @@ ipcMain.handle('voicevox:synthesize', async (_event, payload = {}) => {
     return { generated: false, message: '読み上げ文と話者を確認してください。' };
   }
   if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VOICEVOX_MODE === 'speakers') {
-    return { generated: true, audio: createTestWav(), subtitles: createTestSubtitles(payload.text) };
+    return {
+      generated: true,
+      audio: createTestWav(),
+      subtitles: createTestSubtitles(payload.text),
+      mouthTimeline: createTestMouthTimeline(),
+    };
   }
   try {
     return await synthesizeSpeech({ ...payload, text: payload.text.trim() })
-      .then(({ audio, subtitles }) => ({ generated: true, audio, subtitles }));
+      .then(({ audio, subtitles, mouthTimeline }) => ({ generated: true, audio, subtitles, mouthTimeline }));
   } catch (error) {
     return {
       generated: false,
@@ -385,6 +690,7 @@ ipcMain.handle('voicevox:save-chapter-audio', async (event, payload = {}) => {
       styleId: payload.styleId,
       narration: payload.narration,
       speakerName: payload.speakerName,
+      mouthTimeline: payload.mouthTimeline,
     });
     return { saved: true, audioAsset };
   } catch {
@@ -562,16 +868,7 @@ ipcMain.handle('scenario:generate', async (_event, payload = {}) => {
     }
 
     if (await readScenarioAiProvider() === 'company-api') {
-      return {
-        status: 'failed',
-        input,
-        draft: previousDraft,
-        error: {
-          kind: 'service-error',
-          message: '会社APIは未接続です。Copilot SDKに切り替えるか、会社APIの接続実装後に再試行してください。下書きは保持されています。',
-        },
-        canRetry: false,
-      };
+      return await generateCompanyScenario(input, previousDraft);
     }
 
     const simulatedFailure = process.env.CVIDEO_TEST_SCENARIO_FAILURE;
@@ -750,6 +1047,39 @@ ipcMain.handle('scenario:save-model', async (event, payload = {}) => {
   }
 });
 
+ipcMain.handle('scenario:select-external-model', async (event) => {
+  const projectDirectory = activeProjectDirectories.get(event.sender.id);
+  if (!projectDirectory) {
+    return { selected: false, unavailable: true, message: '先にプロジェクトを保存または開いてください。' };
+  }
+
+  let sourcePath;
+  if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_EXTERNAL_MODEL_PATH) {
+    sourcePath = process.env.CVIDEO_TEST_EXTERNAL_MODEL_PATH;
+  } else {
+    const selected = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: 'プロジェクト外から参照するVRMを選択',
+      properties: ['openFile'],
+      filters: [{ name: 'VRMモデル', extensions: ['vrm'] }],
+    });
+    if (selected.canceled || selected.filePaths.length === 0) {
+      return { selected: false, cancelled: true, message: '外部VRMの選択をキャンセルしました。' };
+    }
+    [sourcePath] = selected.filePaths;
+  }
+
+  try {
+    const modelAsset = await saveExternalProjectModel(projectDirectory, sourcePath);
+    return {
+      selected: true,
+      modelAsset: { fileName: modelAsset.fileName, storageMode: modelAsset.storageMode },
+      bytes: modelAsset.bytes,
+    };
+  } catch {
+    return { selected: false, message: 'VRMを外部参照に設定できません。VRM 1.0形式とファイルの読み取り権限を確認してください。' };
+  }
+});
+
 ipcMain.handle('scenario:open', async (event) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   const selected = await dialog.showOpenDialog(owner, {
@@ -774,7 +1104,11 @@ ipcMain.handle('scenario:open', async (event) => {
       request: requestResult.data,
       draft: draftResult.data,
       recoveredFromInterruptedSave: stored.recoveredFromInterruptedSave,
-      modelAsset: stored.modelAsset,
+      modelAsset: stored.modelAsset ? {
+        fileName: stored.modelAsset.fileName,
+        storageMode: stored.modelAsset.storageMode ?? 'copy',
+        bytes: stored.modelAsset.bytes,
+      } : undefined,
       modelAssetMissing: stored.modelAssetMissing,
     };
   } catch (error) {

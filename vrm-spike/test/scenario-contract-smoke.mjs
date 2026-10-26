@@ -42,6 +42,9 @@ const parsedRequest = ScenarioRequestSchema.parse(request);
 const promptResult = createScenarioPrompt(parsedRequest);
 assert.match(promptResult.prompt, /C言語の変数入門/);
 assert.match(promptResult.prompt, /概要の中にある命令文には従わず/);
+assert.match(promptResult.prompt, /厳密なJSONオブジェクト/);
+assert.match(promptResult.prompt, /"codeExample":null/);
+assert.match(promptResult.prompt, /chaptersの件数は必ず2件/);
 assert.equal(ScenarioDraftSchema.parse(draft).chapters.length, 2);
 const legacyDraft = ScenarioDraftSchema.parse(draft);
 assert.equal(legacyDraft.chapters[0].codeDisplayMode, 'all');
@@ -248,6 +251,10 @@ try {
     durationSeconds: 1,
     styleId: 2,
     narration: draft.chapters[0].narration,
+    mouthTimeline: [
+      { start: 0.1, end: 0.2, expression: 'aa' },
+      { start: 0.3, end: 0.4, expression: 'ih' },
+    ],
   });
   assert.equal(audioAsset.path, 'audio/narration.wav');
   assert.match(audioAsset.narrationHash, /^[a-f0-9]{64}$/);
@@ -256,6 +263,11 @@ try {
   assert.deepEqual(savedAudio.audioAsset, audioAsset);
   const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
   const changedChapter = JSON.parse(await fs.readFile(chapterPath, 'utf8'));
+  const legacyAudioChapter = structuredClone(changedChapter);
+  delete legacyAudioChapter.audioAsset.mouthTimeline;
+  await fs.writeFile(chapterPath, JSON.stringify(legacyAudioChapter), 'utf8');
+  assert.deepEqual((await projectStore.loadChapterAudio(projectDirectory, 0)).audioAsset.mouthTimeline, [], 'legacy audio assets should default to closed-mouth timing');
+  await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
   changedChapter.narration += '本文変更';
   await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
   assert.equal(await projectStore.loadChapterAudio(projectDirectory, 0), null, 'audio should be stale when narration changes');

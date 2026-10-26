@@ -21,9 +21,10 @@
 
       <section class="toolbar" aria-label="描画設定">
         <label class="file-picker">
-          <span>VRMを開く</span>
+          <span>プロジェクトへコピーして開く</span>
           <input id="model-file" type="file" accept=".vrm,model/gltf-binary" />
         </label>
+        <button id="external-model-button" type="button">プロジェクト外のVRMを参照</button>
         <label class="file-picker">
           <span>VRMAモーション</span>
           <input id="motion-file" type="file" accept=".vrma,model/gltf-binary" disabled />
@@ -52,6 +53,10 @@
         <button id="video-cancel-button" type="button" disabled>書き出しを停止</button>
         <button id="ffmpeg-check-button" type="button">FFmpegを確認</button>
         <output id="ffmpeg-status" class="ffmpeg-status" role="status" aria-live="polite">未確認</output>
+        <button id="dependency-check-button" type="button">環境をまとめて確認</button>
+        <output id="dependency-status" class="dependency-status" role="status" aria-live="polite"></output>
+        <button id="diagnostic-copy-button" type="button">環境情報をコピー</button>
+        <output id="diagnostic-copy-status" class="diagnostic-copy-status" role="status" aria-live="polite"></output>
         <output id="video-export-status" class="video-export-status" role="status" aria-live="polite"></output>
       </section>
 
@@ -74,6 +79,7 @@
           <audio id="voicevox-audio" controls hidden></audio>
         </div>
         <p id="voicevox-status" class="voicevox-status" role="status" aria-live="polite">VOICEVOX Engineを起動して話者一覧を取得してください。</p>
+        <p id="voicevox-license-status" class="voicevox-license-status" role="status" aria-live="polite">利用条件の確認前は試聴・章音声を生成できません。</p>
       </section>
 
       <section class="stage" aria-label="1920×1080 VRM描画領域">
@@ -114,9 +120,17 @@
           <label for="scenario-ai-provider">シナリオ生成AI</label>
           <select id="scenario-ai-provider" disabled>
             <option value="copilot">Copilot SDK</option>
-            <option value="company-api">会社API（未接続）</option>
+            <option value="company-api">会社API</option>
           </select>
           <output id="scenario-ai-provider-status" role="status" aria-live="polite">設定を読み込み中</output>
+          <div class="scenario-api-key-controls">
+            <label for="scenario-api-key">会社APIキー</label>
+            <input id="scenario-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" aria-label="会社APIキー" />
+            <button id="scenario-api-key-save" type="button" disabled>キーを保存</button>
+            <button id="scenario-api-key-delete" type="button" disabled>キーを削除</button>
+            <button id="scenario-api-verify" type="button" disabled>接続を確認</button>
+            <output id="scenario-api-key-status" role="status" aria-live="polite">ストレージ状態を確認中</output>
+          </div>
         </div>
         <form id="scenario-request-form" class="scenario-request">
           <label>教材タイトル
@@ -150,6 +164,20 @@
         </div>
       </section>
     </main>
+    <dialog id="material-terms-dialog" aria-labelledby="material-terms-heading" aria-describedby="material-terms-description">
+      <form method="dialog" class="material-terms-form">
+        <h2 id="material-terms-heading">素材の利用条件を確認</h2>
+        <p id="material-terms-description"></p>
+        <label class="material-terms-check">
+          <input id="material-terms-confirm-checkbox" type="checkbox" />
+          利用条件を確認し、社内共有・動画利用が許可されている
+        </label>
+        <div class="material-terms-actions">
+          <button id="material-terms-cancel" value="cancel">選択しない</button>
+          <button id="material-terms-approve" value="approve" disabled>確認済みとして利用</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

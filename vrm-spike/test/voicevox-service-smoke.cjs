@@ -32,20 +32,29 @@ const speakers = await listSpeakers(async (url, options) => {
 assert.deepEqual(speakers, [{ name: '四国めたん', styles: [{ name: 'ノーマル', id: 2 }] }]);
 
 const requests = [];
+let lastAudioQuery;
 const result = await synthesizeSpeech({ text: '試験音声です。もう一文です。', styleId: 2 }, async (url, options) => {
   const requestUrl = new URL(url);
   requests.push({ requestUrl, options });
   if (requestUrl.pathname === '/audio_query') {
-    assert.ok(['試験音声です。', 'もう一文です。'].includes(requestUrl.searchParams.get('text')));
+    const sentence = requestUrl.searchParams.get('text');
+    assert.ok(['試験音声です。', 'もう一文です。'].includes(sentence));
     assert.equal(requestUrl.searchParams.get('speaker'), '2');
     assert.equal(options.method, 'POST');
-    return Response.json({ accent_phrases: [], prePhonemeLength: 0.01, postPhonemeLength: 0.01, speedScale: 1 });
+    lastAudioQuery = {
+      accent_phrases: [{
+        moras: [{ consonant: 't', consonant_length: 0.01, vowel: sentence === '試験音声です。' ? 'a' : 'i', vowel_length: 0.03 }],
+        pause_mora: null,
+      }],
+      prePhonemeLength: 0.01,
+      postPhonemeLength: 0.01,
+      speedScale: 1,
+    };
+    return Response.json(lastAudioQuery);
   }
   assert.equal(requestUrl.pathname, '/synthesis');
   assert.equal(requestUrl.searchParams.get('speaker'), '2');
-  assert.deepEqual(JSON.parse(options.body), {
-    accent_phrases: [], prePhonemeLength: 0.01, postPhonemeLength: 0.01, speedScale: 1,
-  });
+  assert.deepEqual(JSON.parse(options.body), lastAudioQuery);
   assert.equal(options.headers['content-type'], 'application/json');
   return new Response(makePcmWav(), { headers: { 'content-type': 'audio/wav' } });
 });
@@ -55,6 +64,10 @@ assert.equal(requests.length, 4);
 assert.deepEqual(result.subtitles, [
   { startSeconds: 0.01, endSeconds: 0.09, text: '試験音声です。' },
   { startSeconds: 0.11, endSeconds: 0.19, text: 'もう一文です。' },
+]);
+assert.deepEqual(result.mouthTimeline, [
+  { start: 0.02, end: 0.05, expression: 'aa' },
+  { start: 0.12, end: 0.15, expression: 'ih' },
 ]);
 
 await assert.rejects(
