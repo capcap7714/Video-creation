@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "title": "C言語で最初のコードを書いてみよう",
+  "language": "ja",
+  "request": {
+    "title": "C言語で最初のコードを書いてみよう",
+    "overview": "C言語では、まず必要な機能を使うためにヘッダを読み込み、main関数の中に処理を書きます。画面へ文字を表示するときはprintf関数を使い、文の終わりにはセミコロン(;)を付けます。\n\nprintf()内の始まりと終わりにダブルクォーテーション(\")を付けます。\\nは、改行の意味です。\n\n最初は定番のHello worldを題材に、ソースコードを書く、実行する、出力を確認する、という一連の流れに慣れていきましょう。\n\n❖例プログラム❖\nprintfでHello worldと表示します。\n例プログラム\n#include <stdio.h>\n\nint main(void) {\n    printf(\"Hello world\\n\");\n    return 0;\n}\n1行ずつ解説\n1行目\n#include <stdio.h>\n#include は、C言語で別のファイルの内容を読み込むための指示です。stdio.hはファイル名で、標準入出力ライブラリを読み込み、printfを使えるようにします。\n2行目\n読みやすくするための空行です。\n3行目\nint main(void) {\nmain関数はCプログラムの実行開始位置です。\n4行目\nprintf(\"Hello world\\n\");\n文字や数値を画面に表示するための関数printfでHello worldを表示し、\\nで改行します。()内の始めと終わりにダブルクォーテーションを付けます。\n5行目\nreturn 0;\n0を返して、プログラムが正常に終了したことを示します。\n6行目\n}\nmain関数の終わりを表します。",
+    "audience": "C言語を初めて学ぶ受講者",
+    "chapterCount": 1,
+    "targetMinutes": 1
+  },
+  "chapters": [
+    {
+      "id": "01",
+      "path": "chapters/01/scenario.json"
+    }
+  ],
+  "modelAsset": {
+    "fileName": "C1.vrm",
+    "sha256": "6c41f0616c02837c0b3da52b2038e199b0c00db991f6dd4fee4a2b590499b0ac",
+    "sizeBytes": 15698532,
+    "storageMode": "external",
+    "sourcePath": "C:\\Users\\SR23440\\Documents\\Copilot\\Video-creation\\C1.vrm"
+  }
+}

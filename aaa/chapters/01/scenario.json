@@ -1,0 +1,804 @@
+{
+  "schemaVersion": 1,
+  "chapterId": "01",
+  "title": "Hello worldを表示する",
+  "learningObjective": "ヘッダ、main関数、printf関数を使った基本的なCプログラムを書き、実行結果を確認する。",
+  "targetMinutes": 1,
+  "narration": "stdio.hを読み込むとprintfを使えます。main関数の中にprintfを書き、文末にセミコロンを付けます。ダブルクォーテーションで囲んだ文字列を表示し、\\nで改行します。コードを実行して、Hello worldと表示されることを確認しましょう。",
+  "codeExample": "#include <stdio.h>\n\nint main(void) {\n    printf(\"Hello world\\n\");\n    return 0;\n}",
+  "runInput": "",
+  "codeDisplayMode": "staged",
+  "codeStages": [
+    {
+      "atSeconds": 0,
+      "visibleLines": 1
+    },
+    {
+      "atSeconds": 1,
+      "visibleLines": 2
+    },
+    {
+      "atSeconds": 2,
+      "visibleLines": 3
+    }
+  ],
+  "subtitles": [
+    {
+      "startSeconds": 0.1,
+      "endSeconds": 5.137,
+      "text": "stdio.hを読み込むとprintfを使えます。"
+    },
+    {
+      "startSeconds": 5.337,
+      "endSeconds": 11.473,
+      "text": "main関数の中にprintfを書き、文末にセミコロンを付けます。"
+    },
+    {
+      "startSeconds": 11.673,
+      "endSeconds": 16.199,
+      "text": "ダブルクォーテーションで囲んだ文字列を表示し、\\nで改行します。"
+    },
+    {
+      "startSeconds": 16.399,
+      "endSeconds": 21.233,
+      "text": "コードを実行して、Hello worldと表示されることを確認しましょう。"
+    }
+  ],
+  "subtitleNarrationHash": "3dcb16c50585f33af4e9da4e878296888f79bc20fc5fc267887552c0fcb961dc",
+  "characterActions": [],
+  "audioAsset": {
+    "path": "audio/narration.wav",
+    "durationSeconds": 21.333333,
+    "styleId": 2,
+    "speakerName": "四国めたん",
+    "narrationHash": "3dcb16c50585f33af4e9da4e878296888f79bc20fc5fc267887552c0fcb961dc",
+    "mouthTimeline": [
+      {
+        "start": 0.1,
+        "end": 0.221,
+        "expression": "ee"
+      },
+      {
+        "start": 0.275,
+        "end": 0.356,
+        "expression": "ou"
+      },
+      {
+        "start": 0.433,
+        "end": 0.52,
+        "expression": "ih"
+      },
+      {
+        "start": 0.52,
+        "end": 0.603,
+        "expression": "ih"
+      },
+      {
+        "start": 0.663,
+        "end": 0.766,
+        "expression": "ih"
+      },
+      {
+        "start": 0.766,
+        "end": 0.854,
+        "expression": "ih"
+      },
+      {
+        "start": 0.854,
+        "end": 0.991,
+        "expression": "aa"
+      },
+      {
+        "start": 0.991,
+        "end": 1.078,
+        "expression": "ih"
+      },
+      {
+        "start": 1.078,
+        "end": 1.187,
+        "expression": "oh"
+      },
+      {
+        "start": 1.187,
+        "end": 1.332,
+        "expression": "oh"
+      },
+      {
+        "start": 1.737,
+        "end": 1.838,
+        "expression": "ee"
+      },
+      {
+        "start": 1.838,
+        "end": 1.923,
+        "expression": "ih"
+      },
+      {
+        "start": 2.008,
+        "end": 2.077,
+        "expression": "ih"
+      },
+      {
+        "start": 2.077,
+        "end": 2.192,
+        "expression": "oh"
+      },
+      {
+        "start": 2.251,
+        "end": 2.321,
+        "expression": "oh"
+      },
+      {
+        "start": 2.374,
+        "end": 2.446,
+        "expression": "ih"
+      },
+      {
+        "start": 2.506,
+        "end": 2.57,
+        "expression": "oh"
+      },
+      {
+        "start": 2.613,
+        "end": 2.682,
+        "expression": "ou"
+      },
+      {
+        "start": 2.732,
+        "end": 2.817,
+        "expression": "oh"
+      },
+      {
+        "start": 2.896,
+        "end": 2.981,
+        "expression": "ih"
+      },
+      {
+        "start": 2.981,
+        "end": 3.065,
+        "expression": "ih"
+      },
+      {
+        "start": 3.065,
+        "end": 3.174,
+        "expression": "aa"
+      },
+      {
+        "start": 3.174,
+        "end": 3.275,
+        "expression": "aa"
+      },
+      {
+        "start": 3.318,
+        "end": 3.395,
+        "expression": "ou"
+      },
+      {
+        "start": 3.395,
+        "end": 3.521,
+        "expression": "aa"
+      },
+      {
+        "start": 3.521,
+        "end": 3.608,
+        "expression": "ih"
+      },
+      {
+        "start": 3.608,
+        "end": 3.696,
+        "expression": "ee"
+      },
+      {
+        "start": 3.751,
+        "end": 3.836,
+        "expression": "ou"
+      },
+      {
+        "start": 3.904,
+        "end": 4,
+        "expression": "ih"
+      },
+      {
+        "start": 4,
+        "end": 4.094,
+        "expression": "ih"
+      },
+      {
+        "start": 4.094,
+        "end": 4.206,
+        "expression": "ee"
+      },
+      {
+        "start": 4.273,
+        "end": 4.336,
+        "expression": "ou"
+      },
+      {
+        "start": 4.336,
+        "end": 4.446,
+        "expression": "oh"
+      },
+      {
+        "start": 4.505,
+        "end": 4.562,
+        "expression": "ou"
+      },
+      {
+        "start": 4.633,
+        "end": 4.729,
+        "expression": "aa"
+      },
+      {
+        "start": 4.729,
+        "end": 4.792,
+        "expression": "ee"
+      },
+      {
+        "start": 4.852,
+        "end": 4.936,
+        "expression": "aa"
+      },
+      {
+        "start": 4.997,
+        "end": 5.095,
+        "expression": "ou"
+      },
+      {
+        "start": 5.337,
+        "end": 5.445,
+        "expression": "ee"
+      },
+      {
+        "start": 5.506,
+        "end": 5.619,
+        "expression": "ou"
+      },
+      {
+        "start": 5.619,
+        "end": 5.75,
+        "expression": "ee"
+      },
+      {
+        "start": 5.75,
+        "end": 5.856,
+        "expression": "ee"
+      },
+      {
+        "start": 5.856,
+        "end": 5.986,
+        "expression": "aa"
+      },
+      {
+        "start": 5.986,
+        "end": 6.08,
+        "expression": "ih"
+      },
+      {
+        "start": 6.08,
+        "end": 6.166,
+        "expression": "ee"
+      },
+      {
+        "start": 6.218,
+        "end": 6.307,
+        "expression": "ou"
+      },
+      {
+        "start": 6.37,
+        "end": 6.487,
+        "expression": "aa"
+      },
+      {
+        "start": 6.617,
+        "end": 6.688,
+        "expression": "ou"
+      },
+      {
+        "start": 6.688,
+        "end": 6.75,
+        "expression": "ou"
+      },
+      {
+        "start": 6.796,
+        "end": 6.86,
+        "expression": "oh"
+      },
+      {
+        "start": 6.904,
+        "end": 6.993,
+        "expression": "aa"
+      },
+      {
+        "start": 7.047,
+        "end": 7.122,
+        "expression": "aa"
+      },
+      {
+        "start": 7.171,
+        "end": 7.258,
+        "expression": "ih"
+      },
+      {
+        "start": 7.336,
+        "end": 7.422,
+        "expression": "ih"
+      },
+      {
+        "start": 7.422,
+        "end": 7.504,
+        "expression": "ih"
+      },
+      {
+        "start": 7.504,
+        "end": 7.612,
+        "expression": "aa"
+      },
+      {
+        "start": 7.612,
+        "end": 7.715,
+        "expression": "aa"
+      },
+      {
+        "start": 7.758,
+        "end": 7.835,
+        "expression": "ou"
+      },
+      {
+        "start": 7.835,
+        "end": 7.961,
+        "expression": "aa"
+      },
+      {
+        "start": 7.961,
+        "end": 8.048,
+        "expression": "ih"
+      },
+      {
+        "start": 8.048,
+        "end": 8.136,
+        "expression": "ee"
+      },
+      {
+        "start": 8.191,
+        "end": 8.276,
+        "expression": "ou"
+      },
+      {
+        "start": 8.344,
+        "end": 8.44,
+        "expression": "ih"
+      },
+      {
+        "start": 8.44,
+        "end": 8.533,
+        "expression": "ih"
+      },
+      {
+        "start": 8.533,
+        "end": 8.646,
+        "expression": "ee"
+      },
+      {
+        "start": 8.713,
+        "end": 8.77,
+        "expression": "ou"
+      },
+      {
+        "start": 8.77,
+        "end": 8.878,
+        "expression": "oh"
+      },
+      {
+        "start": 8.926,
+        "end": 9.017,
+        "expression": "aa"
+      },
+      {
+        "start": 9.097,
+        "end": 9.211,
+        "expression": "ih"
+      },
+      {
+        "start": 9.727,
+        "end": 9.804,
+        "expression": "ou"
+      },
+      {
+        "start": 9.912,
+        "end": 10.007,
+        "expression": "aa"
+      },
+      {
+        "start": 10.077,
+        "end": 10.129,
+        "expression": "ou"
+      },
+      {
+        "start": 10.172,
+        "end": 10.248,
+        "expression": "ih"
+      },
+      {
+        "start": 10.312,
+        "end": 10.386,
+        "expression": "ee"
+      },
+      {
+        "start": 10.439,
+        "end": 10.515,
+        "expression": "ih"
+      },
+      {
+        "start": 10.57,
+        "end": 10.637,
+        "expression": "oh"
+      },
+      {
+        "start": 10.674,
+        "end": 10.786,
+        "expression": "oh"
+      },
+      {
+        "start": 10.844,
+        "end": 10.953,
+        "expression": "oh"
+      },
+      {
+        "start": 11.012,
+        "end": 11.059,
+        "expression": "ou"
+      },
+      {
+        "start": 11.122,
+        "end": 11.19,
+        "expression": "ee"
+      },
+      {
+        "start": 11.243,
+        "end": 11.325,
+        "expression": "aa"
+      },
+      {
+        "start": 11.387,
+        "end": 11.473,
+        "expression": "ou"
+      },
+      {
+        "start": 11.711,
+        "end": 11.79,
+        "expression": "aa"
+      },
+      {
+        "start": 11.846,
+        "end": 11.912,
+        "expression": "ou"
+      },
+      {
+        "start": 11.95,
+        "end": 12.037,
+        "expression": "ou"
+      },
+      {
+        "start": 12.098,
+        "end": 12.162,
+        "expression": "ou"
+      },
+      {
+        "start": 12.162,
+        "end": 12.254,
+        "expression": "oh"
+      },
+      {
+        "start": 12.254,
+        "end": 12.371,
+        "expression": "oh"
+      },
+      {
+        "start": 12.432,
+        "end": 12.514,
+        "expression": "ee"
+      },
+      {
+        "start": 12.514,
+        "end": 12.592,
+        "expression": "ee"
+      },
+      {
+        "start": 12.691,
+        "end": 12.786,
+        "expression": "oh"
+      },
+      {
+        "start": 12.865,
+        "end": 12.936,
+        "expression": "ee"
+      },
+      {
+        "start": 12.984,
+        "end": 13.057,
+        "expression": "aa"
+      },
+      {
+        "start": 13.117,
+        "end": 13.227,
+        "expression": "oh"
+      },
+      {
+        "start": 13.305,
+        "end": 13.38,
+        "expression": "aa"
+      },
+      {
+        "start": 13.441,
+        "end": 13.52,
+        "expression": "oh"
+      },
+      {
+        "start": 13.583,
+        "end": 13.629,
+        "expression": "ih"
+      },
+      {
+        "start": 13.661,
+        "end": 13.756,
+        "expression": "ee"
+      },
+      {
+        "start": 13.842,
+        "end": 13.902,
+        "expression": "ou"
+      },
+      {
+        "start": 13.902,
+        "end": 14.012,
+        "expression": "oh"
+      },
+      {
+        "start": 14.111,
+        "end": 14.187,
+        "expression": "oh"
+      },
+      {
+        "start": 14.187,
+        "end": 14.271,
+        "expression": "oh"
+      },
+      {
+        "start": 14.337,
+        "end": 14.383,
+        "expression": "ih"
+      },
+      {
+        "start": 14.475,
+        "end": 14.607,
+        "expression": "ih"
+      },
+      {
+        "start": 14.995,
+        "end": 15.089,
+        "expression": "ee"
+      },
+      {
+        "start": 15.136,
+        "end": 15.207,
+        "expression": "ou"
+      },
+      {
+        "start": 15.265,
+        "end": 15.357,
+        "expression": "ee"
+      },
+      {
+        "start": 15.419,
+        "end": 15.519,
+        "expression": "aa"
+      },
+      {
+        "start": 15.519,
+        "end": 15.599,
+        "expression": "ih"
+      },
+      {
+        "start": 15.678,
+        "end": 15.753,
+        "expression": "oh"
+      },
+      {
+        "start": 15.753,
+        "end": 15.83,
+        "expression": "oh"
+      },
+      {
+        "start": 15.876,
+        "end": 15.942,
+        "expression": "ih"
+      },
+      {
+        "start": 15.995,
+        "end": 16.085,
+        "expression": "aa"
+      },
+      {
+        "start": 16.143,
+        "end": 16.199,
+        "expression": "ou"
+      },
+      {
+        "start": 16.476,
+        "end": 16.566,
+        "expression": "oh"
+      },
+      {
+        "start": 16.566,
+        "end": 16.651,
+        "expression": "oh"
+      },
+      {
+        "start": 16.699,
+        "end": 16.777,
+        "expression": "oh"
+      },
+      {
+        "start": 16.777,
+        "end": 16.861,
+        "expression": "oh"
+      },
+      {
+        "start": 16.933,
+        "end": 17.01,
+        "expression": "ih"
+      },
+      {
+        "start": 17.136,
+        "end": 17.206,
+        "expression": "oh"
+      },
+      {
+        "start": 17.206,
+        "end": 17.3,
+        "expression": "oh"
+      },
+      {
+        "start": 17.337,
+        "end": 17.388,
+        "expression": "ih"
+      },
+      {
+        "start": 17.446,
+        "end": 17.57,
+        "expression": "ee"
+      },
+      {
+        "start": 17.924,
+        "end": 17.986,
+        "expression": "aa"
+      },
+      {
+        "start": 18.024,
+        "end": 18.116,
+        "expression": "oh"
+      },
+      {
+        "start": 18.116,
+        "end": 18.258,
+        "expression": "oh"
+      },
+      {
+        "start": 18.672,
+        "end": 18.769,
+        "expression": "aa"
+      },
+      {
+        "start": 18.769,
+        "end": 18.877,
+        "expression": "aa"
+      },
+      {
+        "start": 18.914,
+        "end": 18.982,
+        "expression": "ou"
+      },
+      {
+        "start": 19.025,
+        "end": 19.099,
+        "expression": "oh"
+      },
+      {
+        "start": 19.148,
+        "end": 19.225,
+        "expression": "oh"
+      },
+      {
+        "start": 19.316,
+        "end": 19.392,
+        "expression": "oh"
+      },
+      {
+        "start": 19.392,
+        "end": 19.478,
+        "expression": "oh"
+      },
+      {
+        "start": 19.532,
+        "end": 19.585,
+        "expression": "ih"
+      },
+      {
+        "start": 19.65,
+        "end": 19.733,
+        "expression": "aa"
+      },
+      {
+        "start": 19.768,
+        "end": 19.831,
+        "expression": "ee"
+      },
+      {
+        "start": 19.863,
+        "end": 19.94,
+        "expression": "ou"
+      },
+      {
+        "start": 19.992,
+        "end": 20.06,
+        "expression": "oh"
+      },
+      {
+        "start": 20.118,
+        "end": 20.189,
+        "expression": "oh"
+      },
+      {
+        "start": 20.189,
+        "end": 20.279,
+        "expression": "oh"
+      },
+      {
+        "start": 20.326,
+        "end": 20.403,
+        "expression": "aa"
+      },
+      {
+        "start": 20.461,
+        "end": 20.517,
+        "expression": "ou"
+      },
+      {
+        "start": 20.577,
+        "end": 20.682,
+        "expression": "ih"
+      },
+      {
+        "start": 20.782,
+        "end": 20.85,
+        "expression": "ih"
+      },
+      {
+        "start": 20.896,
+        "end": 20.98,
+        "expression": "aa"
+      },
+      {
+        "start": 21.081,
+        "end": 21.163,
+        "expression": "oh"
+      },
+      {
+        "start": 21.163,
+        "end": 21.233,
+        "expression": "oh"
+      }
+    ]
+  },
+  "executionResult": {
+    "status": "success",
+    "stdout": "Hello world\r\n",
+    "stderr": "",
+    "exitCode": 0,
+    "videoText": "Hello world\n",
+    "sourceCode": "#include <stdio.h>\n\nint main(void) {\n    printf(\"Hello world\\n\");\n    return 0;\n}",
+    "sourceInput": ""
+  },
+  "runCode": true,
+  "executionAtSeconds": 0
+}
