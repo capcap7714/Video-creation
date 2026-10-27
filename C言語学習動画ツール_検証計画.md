@@ -1,3 +1,20 @@
+# 最新の検証状況（2026-10-27）
+
+## 今回の検証結果
+
+- `npm run test:electron` は終了コード0。90フレーム計測は平均2.1 ms、p95 3.8 ms、33.3 ms超過0枚、レンダラーコンソールエラー0件。前回の30秒タイムアウトは再現しなかった。
+- 黒板画像をコード表示の背景に追加し、プレビューとMP4の両方で表示する。下端のチョーク受けにコードが重ならない余白を確保した。
+- 黒板反映後の `npm run test:video-export-e2e` は終了コード0。1080p30 H.264、48 kHz AAC、mov_text字幕、SRT 1 cueを含むMP4（80,114 bytes）を生成し、FFmpeg全体デコードに成功した。
+- 実教材動画も再生成し、30秒地点のフレームで黒板・コード・チョーク受けの表示を目視確認した。成果物: `vrm-spike/test-results/gcc-c-intro-2026-10-27T04-22-04-743Z/gcc-c-intro.mp4`（2,506,014 bytes、字幕12件、音声76.736秒、GCC出力 `Hello, C!`）。確認画像: `vrm-spike/test-results/gcc-intro-blackboard-preview.png`。
+- `npm.cmd --prefix .\vrm-spike run video:gcc-intro` で新規作成からUI編集・実GCC実行・MP4/SRT書き出し・Electron再起動後の復元まで完走。編集済みCコード、標準出力 `Hello, C!`、success状態、VOICEVOX音声（76.736秒）、字幕12件、VRMを復元し、レンダラーエラー0件を確認。成果物 `vrm-spike/test-results/gcc-c-intro-2026-10-27T05-58-40-208Z/gcc-c-intro.mp4`（2,535,666 bytes）とSRTを生成し、1080p30 H.264・48 kHz AAC・mov_text字幕の検査およびFFmpeg全体デコードに成功した。長尺書き出しは300秒を超えたため、統合テストの完了待ちを600秒に設定した。
+- `npm run build` は成功し、黒板画像（117.33 KB）もViteのビルド成果物に含まれた。500 KB超のJavaScriptチャンク警告は継続。
+
+## 未完了の確認
+
+- 生成教材の正確性・社内適合性、実サービスの429/利用上限、実音声の形式的な品質評価。
+- 利用ソフト・素材の名称、版、社内利用条件の記録。特にモーション素材の個別条件。
+- ネイティブ保存ダイアログ、対象Windowsの最低バージョン、実機GPU/メモリ要件。
+
 A、入力を失わず再試行または手動編集へ戻れる（`test:scenario`、`test:scenario-failure-ui`、`test:scenario-rate-limit-ui`、2026-10-25）
 - [x] 生成セッションでファイル操作・シェル実行などの不要なツールを無効化できる
 - [x] ユーザー確認前にシナリオが確定・上書きされない（`test:scenario-review-ui`で生成直後の保存無効、確認操作だけでは既存章JSONが不変、確認後にのみ保存可能になることを確認）

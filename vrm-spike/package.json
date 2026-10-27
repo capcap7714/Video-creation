@@ -51,6 +51,7 @@
     "test:dependency-status-ui": "node test/electron-smoke.cjs --with-dependency-summary-fixture",
     "test:dependency-status-live-ui": "node test/electron-smoke.cjs --with-dependency-summary-live-fixture",
     "test:video-export": "node test/video-export-smoke.cjs",
+    "video:gcc-intro": "node scripts/create-gcc-intro-video.cjs",
     "test:video-export-e2e": "node test/run-with-report.cjs test/video-export-electron-smoke.cjs",
     "test:video-export-sync-e2e": "node test/run-with-report.cjs test/video-export-electron-smoke.cjs --with-live-voicevox --timeline-sync-only",
     "test:video-export-sync-mp4-e2e": "node test/run-with-report.cjs test/video-export-electron-smoke.cjs --with-live-voicevox --timeline-sync-export-only",

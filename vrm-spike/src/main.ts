@@ -145,6 +145,12 @@ const videoFrameCanvas = document.createElement('canvas');
 videoFrameCanvas.width = 1920;
 videoFrameCanvas.height = 1080;
 const videoFrameContext = videoFrameCanvas.getContext('2d')!;
+const blackboardImage = new Image();
+const blackboardImageReady = new Promise<HTMLImageElement>((resolve, reject) => {
+  blackboardImage.addEventListener('load', () => resolve(blackboardImage), { once: true });
+  blackboardImage.addEventListener('error', () => reject(new Error('黒板画像を読み込めません。')), { once: true });
+});
+blackboardImage.src = new URL('./assets/bunbougu_kokuban.png', import.meta.url).href;
 const fileInput = document.querySelector<HTMLInputElement>('#model-file')!;
 const externalModelButton = document.querySelector<HTMLButtonElement>('#external-model-button')!;
 let activeModelFile: File | undefined;
@@ -187,6 +193,7 @@ const runtimeStatus = document.querySelector<HTMLElement>('#runtime-status')!;
 const modelReadout = document.querySelector<HTMLElement>('#model-readout')!;
 const mouthReadout = document.querySelector<HTMLElement>('#mouth-readout')!;
 const videoCodePreview = document.querySelector<HTMLPreElement>('#video-code-preview')!;
+videoCodePreview.style.backgroundImage = `url("${blackboardImage.src}")`;
 const videoResultPreview = document.querySelector<HTMLPreElement>('#video-result-preview')!;
 const subtitlePreview = document.querySelector<HTMLElement>('#subtitle-preview')!;
 const creditPreview = document.querySelector<HTMLElement>('#credit-preview')!;
@@ -984,11 +991,13 @@ function syncVideoComposition(seconds: number) {
   videoResultPreview.hidden = showingCredit || videoResultPreview.textContent.length === 0;
 }
 
-function drawVideoTextPanel(text: string, x: number, y: number, width: number, height: number, fontSize: number, align: CanvasTextAlign = 'left') {
+function drawVideoTextPanel(text: string, x: number, y: number, width: number, height: number, fontSize: number, align: CanvasTextAlign = 'left', backgroundFill: string | null = 'rgba(16, 27, 25, 0.88)') {
   if (!text.trim()) return;
   const padding = 20;
-  videoFrameContext.fillStyle = 'rgba(16, 27, 25, 0.88)';
-  videoFrameContext.fillRect(x, y, width, height);
+  if (backgroundFill) {
+    videoFrameContext.fillStyle = backgroundFill;
+    videoFrameContext.fillRect(x, y, width, height);
+  }
   videoFrameContext.font = `${fontSize}px Consolas, "Yu Gothic UI", sans-serif`;
   videoFrameContext.fillStyle = '#f2f5ed';
   videoFrameContext.textBaseline = 'top';
@@ -1016,6 +1025,23 @@ function drawVideoTextPanel(text: string, x: number, y: number, width: number, h
   visibleLines.forEach((line, index) => {
     videoFrameContext.fillText(line, align === 'center' ? x + width / 2 : x + padding, y + padding + index * lineHeight, maxWidth);
   });
+}
+
+async function drawVideoCodePanel(text: string, x: number, y: number, width: number, height: number) {
+  if (!text.trim()) return;
+  const image = await blackboardImageReady;
+  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+  const imageWidth = image.naturalWidth * scale;
+  const imageHeight = image.naturalHeight * scale;
+  videoFrameContext.save();
+  videoFrameContext.beginPath();
+  videoFrameContext.rect(x, y, width, height);
+  videoFrameContext.clip();
+  videoFrameContext.drawImage(image, x + (width - imageWidth) / 2, y + (height - imageHeight) / 2, imageWidth, imageHeight);
+  videoFrameContext.fillStyle = 'rgba(0, 16, 11, 0.10)';
+  videoFrameContext.fillRect(x, y, width, height);
+  videoFrameContext.restore();
+  drawVideoTextPanel(text, x, y, width, height - 60, 22, 'left', null);
 }
 
 function drawCreditFrame(chapterTitle: string, creditText: string) {
@@ -1057,7 +1083,7 @@ async function createVideoFrame(frameIndex: number, contentFrames: number, chapt
       videoFrameContext.stroke();
     }
     videoFrameContext.drawImage(canvas, 0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
-    drawVideoTextPanel(videoCodePreview.textContent ?? '', 48, 54, 820, 600, 22);
+    await drawVideoCodePanel(videoCodePreview.textContent ?? '', 48, 54, 820, 600);
     drawVideoTextPanel(videoResultPreview.textContent ?? '', 48, 680, 820, 188, 20);
     drawVideoTextPanel(subtitlePreview.hidden ? '' : subtitlePreview.textContent ?? '', 96, 920, 1728, 110, 40, 'center');
   }
@@ -1072,6 +1098,7 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     __cvideoTestCreateVideoFrame?: typeof createVideoFrame;
     __cvideoTestGetModelRotation?: () => number;
     __cvideoTestGetModelScreenX?: () => number;
+    __cvideoTestGetCameraFrontOffset?: () => number;
     __cvideoTestGetArmHandHeights?: () => {
       baseline: { left: number | null; right: number | null };
       current: { left: number | null; right: number | null };
@@ -1087,6 +1114,11 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
   testWindow.__cvideoTestGetModelScreenX = () => {
     if (!activeVrm) return Number.NaN;
     return new THREE.Box3().setFromObject(activeVrm.scene).getCenter(new THREE.Vector3()).project(camera).x;
+  };
+  testWindow.__cvideoTestGetCameraFrontOffset = () => {
+    if (!activeVrm) return Number.NaN;
+    const modelCenter = new THREE.Box3().setFromObject(activeVrm.scene).getCenter(new THREE.Vector3());
+    return camera.position.z - modelCenter.z;
   };
   testWindow.__cvideoTestGetArmHandHeights = () => {
     activeVrm?.scene.updateMatrixWorld(true);
@@ -2381,7 +2413,7 @@ loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
 
 type MouthShape = { start: number; end: number; expression: string };
 type ExpressionEvent = { start: number; end: number; intensity: number };
-type ArmRestPoseEntry = { bone: THREE.Object3D; rotation: THREE.Euler; zOffset: number };
+type ArmRestPoseEntry = { bone: THREE.Object3D; hand: THREE.Object3D; rotation: THREE.Euler; zOffset: number };
 const mouthExpressions = ['aa', 'ih', 'ou', 'ee', 'oh'];
 const modelFacingOffset = -Math.PI / 6;
 let activeVrm: VRM | undefined;
@@ -2461,6 +2493,23 @@ function applyCharacterArmRestPose() {
     entry.bone.rotation.copy(entry.rotation);
     entry.bone.rotation.z += entry.zOffset;
   }
+}
+
+function calibrateCharacterArmRestPose() {
+  if (!activeVrm) return;
+  for (const entry of armRestPose) {
+    entry.bone.rotation.copy(entry.rotation);
+    entry.bone.rotation.z += 1.15;
+    activeVrm.scene.updateMatrixWorld(true);
+    const positiveHeight = entry.hand.getWorldPosition(new THREE.Vector3()).y;
+    entry.bone.rotation.copy(entry.rotation);
+    entry.bone.rotation.z -= 1.15;
+    activeVrm.scene.updateMatrixWorld(true);
+    const negativeHeight = entry.hand.getWorldPosition(new THREE.Vector3()).y;
+    entry.zOffset = positiveHeight < negativeHeight ? 1.15 : -1.15;
+    entry.bone.rotation.copy(entry.rotation);
+  }
+  activeVrm.scene.updateMatrixWorld(true);
 }
 
 function getSelectedChapterMouthTimeline() {
@@ -2653,13 +2702,17 @@ fileInput.addEventListener('change', async () => {
     };
     armRestPose = (['leftUpperArm', 'rightUpperArm'] as const).flatMap((boneName) => {
       const bone = activeVrm?.humanoid.getNormalizedBoneNode(boneName);
-      if (!bone) return [];
+      const handName = boneName === 'leftUpperArm' ? 'leftHand' : 'rightHand';
+      const hand = activeVrm?.humanoid.getNormalizedBoneNode(handName);
+      if (!bone || !hand) return [];
       return [{
         bone,
+        hand,
         rotation: bone.rotation.clone(),
-        zOffset: boneName === 'leftUpperArm' ? 1.15 : -1.15,
+        zOffset: 0,
       }];
     });
+    calibrateCharacterArmRestPose();
     motionInput.disabled = false;
     motionInput.value = '';
     mouthTimelineInput.disabled = false;
@@ -2675,8 +2728,8 @@ fileInput.addEventListener('change', async () => {
     const size = bounds.getSize(new THREE.Vector3());
     const height = Math.max(size.y, 0.5);
     const rightCompositionOffset = height * 0.28;
-    controls.target.set(center.x + rightCompositionOffset, center.y, center.z);
-    camera.position.set(center.x + rightCompositionOffset, center.y + height * 0.08, center.z - height * 2.65);
+    controls.target.set(center.x - rightCompositionOffset, center.y, center.z);
+    camera.position.set(center.x - rightCompositionOffset, center.y + height * 0.08, center.z + height * 2.65);
     camera.near = Math.max(height / 1000, 0.01);
     camera.far = height * 20;
     camera.updateProjectionMatrix();

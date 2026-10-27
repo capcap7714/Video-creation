@@ -1471,8 +1471,15 @@ async function main() {
       console.log('C execution result and edited video text restored after Electron restart');
     }
 
-    await window.locator('#model-file').setInputFiles(path.resolve(__dirname, '../../C1.vrm'));
-    await window.waitForTimeout(3000);
+    const testVrmPath = process.env.CVIDEO_TEST_VRM_PATH
+      ? path.resolve(process.env.CVIDEO_TEST_VRM_PATH)
+      : path.resolve(__dirname, '../../C1.vrm');
+    await window.locator('#model-file').setInputFiles(testVrmPath);
+    await window.waitForFunction(
+      () => document.querySelector('#runtime-status')?.textContent === 'VRM 1.0読込完了',
+      null,
+      { timeout: 30_000 },
+    );
     const runtimeStatus = await window.locator('#runtime-status').innerText();
     console.log(`VRM load status: ${runtimeStatus}`);
     if (runtimeStatus !== 'VRM 1.0読込完了') {
@@ -1544,6 +1551,8 @@ async function main() {
       Number.isFinite(modelRotation) && Math.abs(modelRotation + Math.PI / 6) < 1e-6,
       `VRM should face 30 degrees to the viewer's left at the initial timeline position (rotation: ${modelRotation})`,
     );
+    const cameraFrontOffset = await window.evaluate(() => window.__cvideoTestGetCameraFrontOffset?.());
+    assert.ok(cameraFrontOffset > 0, `camera should view the VRM from its front side (offset: ${cameraFrontOffset})`);
     const modelScreenX = await window.evaluate(() => window.__cvideoTestGetModelScreenX?.());
     assert.ok(modelScreenX > 0.1, `VRM should be framed to the right of center (screen x: ${modelScreenX})`);
     await window.locator('#timeline').evaluate((input) => {

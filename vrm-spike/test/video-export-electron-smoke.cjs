@@ -794,11 +794,16 @@ async function main() {
     }, 500);
     await window.locator('#video-export-button').click();
     try {
-      await window.waitForFunction(
-        () => !document.querySelector('#video-export-button')?.disabled,
-        null,
-        { timeout: 120_000 },
-      );
+      try {
+        await window.waitForFunction(
+          () => !document.querySelector('#video-export-button')?.disabled,
+          null,
+          { timeout: 120_000 },
+        );
+      } catch (error) {
+        const lastStatus = await window.locator('#video-export-status').innerText();
+        throw new Error(`${error instanceof Error ? error.message : String(error)} Last export status: ${lastStatus}`);
+      }
     } finally {
       clearInterval(resourceSampler);
     }
