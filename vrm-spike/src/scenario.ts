@@ -47,7 +47,7 @@ const ScenarioChapterSchema = z.object({
   }).strict().nullable().default(null),
   executionResult: CExecutionResultSchema.nullable().default(null),
   runCode: z.boolean(),
-  executionAtSeconds: z.number().min(0).max(3600).default(0),
+  executionAtSeconds: z.number().min(0).max(3600).default(2),
 }).strict().superRefine((chapter, context) => {
   if (chapter.runCode && chapter.codeExample === null) {
     context.addIssue({
@@ -322,7 +322,7 @@ export function createScenarioPrompt(input: unknown): { request: ScenarioRequest
       : ['手動設定モードです。subtitlesとcharacterActionsは空配列にしてください。']),
     'executionResultは実行前なのでnullにしてください。',
     '出力は厳密なJSONオブジェクトにしてください。トップレベルのキーはtitleとchaptersだけで、各章のキーは次の例にあるものだけです。余分なキーは追加しないでください。',
-    `各章のJSON形式: {"title":"章タイトル","learningObjective":"学習目標","targetMinutes":3,"narration":"20文字以上の読み上げ本文","codeExample":null,"runInput":"","${codeStageExample},${subtitleMotionExample},"subtitleNarrationHash":null,"audioAsset":null,"executionResult":null,"runCode":false,"executionAtSeconds":0}`,
+    `各章のJSON形式: {"title":"章タイトル","learningObjective":"学習目標","targetMinutes":3,"narration":"20文字以上の読み上げ本文","codeExample":null,"runInput":"","${codeStageExample},${subtitleMotionExample},"subtitleNarrationHash":null,"audioAsset":null,"executionResult":null,"runCode":false,"executionAtSeconds":2}`,
     'targetMinutesは指定された章ごとの目標時間と同じ整数にしてください。narrationは20文字以上、codeExampleはコードがなければnullにしてください。runCodeがtrueならcodeExampleをnullにできません。すべてのキーを省略せず含めてください。',
     request.chapterCount === undefined ? '' : `chaptersの件数は必ず${request.chapterCount}件にしてください。`,
     '概要にない仕様や事実を作らず、不明な点は説明を控えめにしてください。',

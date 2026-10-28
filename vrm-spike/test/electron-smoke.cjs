@@ -660,6 +660,7 @@ async function main() {
       await window.evaluate((draft) => window.__cvideoTestLoadScenarioDraft(draft), chapterFixture);
       const chapterTitles = () => window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value));
       assert.deepEqual(await chapterTitles(), ['変数を使う', '計算結果を表示する']);
+      assert.equal(await window.locator('.execution-time').first().inputValue(), '2', 'C results should default to appearing after the opening frames');
       assert.equal(await window.locator('.voicevox-panel').evaluate((panel) => {
         const selected = document.querySelector('.chapter-preview-target:checked')?.closest('fieldset');
         return panel.closest('.chapter-audio-controls') === selected?.querySelector('.chapter-audio-controls');

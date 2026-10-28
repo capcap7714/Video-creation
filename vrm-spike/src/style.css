@@ -134,17 +134,22 @@ canvas { display: block; width: 100%; height: 100%; }
 .video-code-preview, .video-result-preview { position: absolute; z-index: 1; left: 3%; width: 43%; overflow: hidden; margin: 0; padding: 16px 20px; background: rgba(16, 27, 25, .88); color: #f2f5ed; font: 20px/1.4 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .video-code-preview {
   top: 5%; left: 2.5%; width: 64.05%; height: 83.4%; max-height: none;
-  padding: 20px 20px 60px; background-color: #064b3b; background-position: center; background-size: cover; background-repeat: no-repeat;
+  padding: 32px 20px 60px 36px; background-color: #064b3b; background-position: center; background-size: cover; background-repeat: no-repeat;
   color: #f7f8ee; font: 22px/1.4 Consolas, "Yu Gothic UI", sans-serif;
 }
-.video-result-preview { bottom: 20%; max-height: 15%; border-left: 4px solid #d49a52; }
+.video-result-preview { top: 7.4%; right: 2.5%; bottom: auto; left: auto; width: 28.75%; height: 22.22%; max-height: none; padding: 20px; }
 .video-code-preview[hidden], .video-result-preview[hidden] { display: none; }
 .credit-preview { position: absolute; z-index: 3; inset: 0; display: grid; align-content: center; justify-items: center; gap: 24px; padding: 32px; background: #18312d; color: #f2f5ed; text-align: center; }
 .credit-preview[hidden] { display: none; }
 .credit-preview span { color: #d4a56d; font: 18px Consolas, monospace; }
 .credit-preview h2 { max-width: 85%; margin: 0; font-size: 32px; font-weight: 500; overflow-wrap: anywhere; }
 .credit-preview p { max-width: 85%; margin: 0; font-size: 20px; overflow-wrap: anywhere; }
-.video-export-status { min-width: 180px; max-width: 360px; color: var(--muted); font-size: 12px; white-space: pre-line; overflow-wrap: anywhere; }
+.video-export-status { display: block; flex: 1 1 100%; width: 100%; max-width: 720px; margin-top: 4px; padding: 10px 12px; border: 1px solid var(--line); border-left: 4px solid #65736d; background: rgba(255, 255, 255, .78); color: var(--ink); font-size: 13px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+.video-export-status:empty { display: none; }
+.video-export-status[data-state="working"] { border-left-color: #2d7562; }
+.video-export-status[data-state="success"] { border-color: #6eaa8e; border-left-color: #287b55; background: #f0f8f3; }
+.video-export-status[data-state="error"] { border-color: #d64d32; border-left-color: #b52f1b; background: #fff1ed; color: #762416; }
+.video-export-status[data-state="cancelled"] { border-left-color: #65736d; }
 .empty-mark { color: var(--accent); font: 500 clamp(42px, 8vw, 96px) Consolas, monospace; line-height: 1; }
 .empty-state p { margin: 18px 0 5px; font-size: 16px; font-weight: 600; }
 .empty-state small { color: var(--muted); font: 12px Consolas, monospace; }

@@ -13,6 +13,7 @@ const useLiveVoicevox = process.env.CVIDEO_VIDEO_EXPORT_VOICEVOX === '1' || proc
 const missingAudioOnly = process.argv.includes('--missing-audio-only');
 const timelineSyncExportOnly = process.argv.includes('--timeline-sync-export-only');
 const timelineSyncOnly = !timelineSyncExportOnly && process.argv.includes('--timeline-sync-only');
+const exportDiagnosticsOnly = process.argv.includes('--export-diagnostics-only');
 const syncResultPath = process.argv.find((argument) => argument.startsWith('--sync-result='))?.slice('--sync-result='.length);
 const resultFileArgument = process.argv.find((argument) => argument.startsWith('--result-file='))?.slice('--result-file='.length);
 const resultFilePath = resultFileArgument
@@ -339,10 +340,24 @@ async function main() {
       comparisonCanvas.height = 1080;
       const context = comparisonCanvas.getContext('2d');
       context.drawImage(previewImage, 0, 0);
-      const previewPixels = context.getImageData(900, 0, 1020, 880).data;
+      const previewPixels = context.getImageData(1280, 340, 640, 540).data;
       context.clearRect(0, 0, comparisonCanvas.width, comparisonCanvas.height);
       context.drawImage(exportImage, 0, 0);
-      const exportPixels = context.getImageData(900, 0, 1020, 880).data;
+      const exportPixels = context.getImageData(1280, 340, 640, 540).data;
+      const codeRegion = context.getImageData(64, 70, 600, 260).data;
+      let codeTextMinX = Number.POSITIVE_INFINITY;
+      let codeTextMinY = Number.POSITIVE_INFINITY;
+      for (let y = 0; y < 260; y += 1) {
+        for (let x = 0; x < 600; x += 1) {
+          const pixelIndex = (y * 600 + x) * 4;
+          if (codeRegion[pixelIndex] > 220 && codeRegion[pixelIndex + 1] > 220 && codeRegion[pixelIndex + 2] > 210) {
+            codeTextMinX = Math.min(codeTextMinX, 64 + x);
+            codeTextMinY = Math.min(codeTextMinY, 70 + y);
+          }
+        }
+      }
+      const resultPanelPixel = Array.from(context.getImageData(1800, 300, 1, 1).data.slice(0, 3));
+      const boardInteriorPixel = Array.from(context.getImageData(200, 760, 1, 1).data.slice(0, 3));
       let differingPixels = 0;
       for (let index = 0; index < previewPixels.length; index += 4) {
         if (
@@ -352,7 +367,7 @@ async function main() {
           || previewPixels[index + 3] !== exportPixels[index + 3]
         ) differingPixels += 1;
       }
-      return { differingPixels, comparedPixels: previewPixels.length / 4, previewText, exportText, previewCodeStage, previewPose };
+      return { differingPixels, comparedPixels: previewPixels.length / 4, previewText, exportText, previewCodeStage, previewPose, codeTextMinX, codeTextMinY, resultPanelPixel, boardInteriorPixel };
     }, {
       frameIndex,
       contentFrames: Math.ceil(loadedAudioDurationSeconds * 30),
@@ -375,6 +390,10 @@ async function main() {
     assert.deepEqual(afterExecution.previewText, afterExecution.exportText, 'the preview and export should agree between execution and code/action timestamps');
     assert.equal(afterExecution.previewText.code.split('\n').length, 1, 'only the first staged code line should be visible before the code-stage timestamp');
     assert.equal(afterExecution.previewText.result, draft.chapters[0].executionResult.videoText, 'the C result should appear at its configured timestamp');
+    assert.ok(afterExecution.codeTextMinX >= 84, `code should begin inside the board's left edge (x=${afterExecution.codeTextMinX})`);
+    assert.ok(afterExecution.codeTextMinY >= 85, `code should begin inside the board's top edge (y=${afterExecution.codeTextMinY})`);
+    assert.ok(afterExecution.resultPanelPixel[1] < 55, 'the result panel should render in the clear area to the right of the board');
+    assert.ok(afterExecution.boardInteriorPixel[1] > 55, 'the result panel should not cover the blackboard');
     assert.equal(afterExecution.previewText.subtitle, synchronizationCue.text, 'the generated subtitle should remain synchronized between timeline events');
     assertFrameMatchesPreview(afterExecution, 'after C-result timestamp');
 
@@ -723,10 +742,13 @@ async function main() {
     const projectBeforeFailedExport = await projectStore.loadScenarioProject(projectDirectory);
     await app.evaluate(() => { process.env.CVIDEO_TEST_VIDEO_EXPORT_FAIL_ONCE = '1'; });
     await window.locator('#video-export-button').click();
-    await window.getByText(
-      'ENOSPC: 空き容量不足で動画フレームを書き込めません。保存先の空き容量を確認して再試行してください。',
-      { exact: true },
-    ).waitFor({ timeout: 30_000 });
+    await window.waitForFunction(
+      () => document.querySelector('#video-export-status')?.textContent?.includes(
+        'ENOSPC: 空き容量不足で動画フレームを書き込めません。保存先の空き容量を確認して再試行してください。',
+      ),
+      null,
+      { timeout: 30_000 },
+    );
     await window.waitForFunction(
       () => !document.querySelector('#video-export-button')?.disabled,
       null,
@@ -755,8 +777,16 @@ async function main() {
     const ffmpegFailureStatus = await window.locator('#video-export-status').innerText();
     assert.match(ffmpegFailureStatus, /FFmpegが終了コード\d+で失敗しました。/);
     assert.match(ffmpegFailureStatus, /Unknown encoder 'cvideo_test_missing_encoder'/);
+    assert.match(ffmpegFailureStatus, /MP4を書き出せませんでした。/);
+    assert.match(ffmpegFailureStatus, /停止した段階: /);
+    assert.match(ffmpegFailureStatus, /次の確認: 「FFmpegを確認」を実行し/u);
+    assert.equal(await window.locator('#video-export-status').getAttribute('data-state'), 'error');
     assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'FFmpeg failure should preserve the previous MP4');
     assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'FFmpeg failure should preserve the previous SRT');
+    if (exportDiagnosticsOnly) {
+      console.log('MP4 failure diagnostics displayed the failed stage, FFmpeg error detail, and next action');
+      return;
+    }
 
     const unavailableOutputParent = path.join(testDirectory, 'not-a-directory');
     await fs.writeFile(unavailableOutputParent, 'not a directory');

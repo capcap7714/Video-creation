@@ -144,6 +144,7 @@ const canvas = document.querySelector<HTMLCanvasElement>('#render-canvas')!;
 const videoFrameCanvas = document.createElement('canvas');
 videoFrameCanvas.width = 1920;
 videoFrameCanvas.height = 1080;
+const DEFAULT_EXECUTION_AT_SECONDS = 2;
 const videoFrameContext = videoFrameCanvas.getContext('2d')!;
 const blackboardImage = new Image();
 const blackboardImageReady = new Promise<HTMLImageElement>((resolve, reject) => {
@@ -171,6 +172,36 @@ const benchmarkButton = document.querySelector<HTMLButtonElement>('#benchmark-bu
 const videoExportButton = document.querySelector<HTMLButtonElement>('#video-export-button')!;
 const videoCancelButton = document.querySelector<HTMLButtonElement>('#video-cancel-button')!;
 const videoExportStatus = document.querySelector<HTMLOutputElement>('#video-export-status')!;
+
+function setVideoExportStatus(message: string, state: 'info' | 'working' | 'success' | 'error' | 'cancelled' = 'working') {
+  videoExportStatus.dataset.state = state;
+  videoExportStatus.textContent = message;
+}
+
+function getVideoExportAdvice(message: string) {
+  if (/ENOSPC|空き容量/i.test(message)) {
+    return '保存先の空き容量を確保するか、別のドライブを選んでください。';
+  }
+  if (/EACCES|EPERM|permission|access denied|アクセス権|書き込めません/i.test(message)) {
+    return '保存先フォルダーの書き込み権限を確認し、別のフォルダーでも試してください。';
+  }
+  if (/ffmpeg|encoder|H\.264|libx264|AAC|ENOENT/i.test(message)) {
+    return '「FFmpegを確認」を実行し、FFmpegとH.264/AACエンコーダーが利用可能か確認してください。';
+  }
+  if (/音声|字幕|章素材|プロジェクト/i.test(message)) {
+    return 'プロジェクトを保存し、対象章の音声・字幕素材がそろっているか確認してください。';
+  }
+  return '保存先、空き容量、対象章の素材を確認してください。詳細を添えて再試行できます。';
+}
+
+function showVideoExportFailure(stage: string, error: unknown) {
+  const message = (error instanceof Error ? error.message : String(error)).trim() || '詳細情報がありません。';
+  const detail = message.length > 1600 ? `${message.slice(0, 1600)}\n（詳細は長いため省略しました）` : message;
+  setVideoExportStatus(
+    `MP4を書き出せませんでした。\n停止した段階: ${stage}\n原因: ${detail}\n次の確認: ${getVideoExportAdvice(message)}`,
+    'error',
+  );
+}
 const voicevoxPanel = document.querySelector<HTMLElement>('#voicevox-panel')!;
 const voicevoxConnectButton = document.querySelector<HTMLButtonElement>('#voicevox-connect-button')!;
 const voicevoxStyle = document.querySelector<HTMLSelectElement>('#voicevox-style')!;
@@ -606,6 +637,7 @@ diagnosticCopyButton.addEventListener('click', async () => {
 });
 
 videoExportButton.addEventListener('click', async () => {
+  videoExportStatus.dataset.state = 'info';
   if (!window.videoApi) {
     videoExportStatus.textContent = 'MP4書き出しはElectronアプリ内で利用できます。';
     return;
@@ -685,7 +717,7 @@ videoExportButton.addEventListener('click', async () => {
     atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
     visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
   }));
-  const executionAtSeconds = Number(selectedChapter.querySelector<HTMLInputElement>('.execution-time')?.value ?? 0);
+  const executionAtSeconds = Number(selectedChapter.querySelector<HTMLInputElement>('.execution-time')?.value ?? DEFAULT_EXECUTION_AT_SECONDS);
   const characterActions = [...selectedChapter.querySelectorAll<HTMLDivElement>('.character-action-row')].map((row) => ({
     atSeconds: Number(row.querySelector<HTMLInputElement>('.character-action-time')!.value),
     action: row.querySelector<HTMLSelectElement>('.character-action-type')!.value as 'explain' | 'attention' | 'happy',
@@ -762,17 +794,24 @@ videoExportButton.addEventListener('click', async () => {
   benchmarkButton.disabled = true;
   videoExportButton.disabled = true;
   videoCancelButton.disabled = true;
-  videoExportStatus.textContent = 'FFmpegと章素材を確認しています...';
+  let exportStage = 'FFmpeg・章素材の確認と保存先の準備';
+  setVideoExportStatus('FFmpegと章素材を確認しています...', 'working');
   try {
     const started = await window.videoApi.startExport(chapterIndex);
     if (!started.started || !started.exportId || !started.frameCount || !started.contentDurationSeconds) {
-      videoExportStatus.textContent = started.message;
+      if (started.cancelled) {
+        setVideoExportStatus(started.message ?? '動画の書き出しをキャンセルしました。', 'cancelled');
+      } else {
+        showVideoExportFailure(exportStage, started.message ?? '書き出しを開始できませんでした。');
+      }
       return;
     }
     const exportId = started.exportId;
     activeVideoExportId = exportId;
     const contentFrames = Math.ceil(started.contentDurationSeconds * 30);
     videoCancelButton.disabled = false;
+    exportStage = 'PNGフレームの生成とFFmpegエンコード';
+    setVideoExportStatus('画面を生成・エンコード中: 0%', 'working');
     for (let frameIndex = 0; frameIndex < started.frameCount; frameIndex += 1) {
       if (activeVideoExportId !== exportId) throw new Error('動画の書き出しを停止しました。');
       const frame = await createVideoFrame(
@@ -785,14 +824,16 @@ videoExportButton.addEventListener('click', async () => {
       if (!result.written) throw new Error(result.message ?? '動画フレームを書き込めません。');
       if ((frameIndex + 1) % 30 === 0 || frameIndex + 1 === started.frameCount) {
         const percentage = Math.floor((frameIndex + 1) * 100 / started.frameCount);
-        videoExportStatus.textContent = `画面を生成・エンコード中: ${percentage}% (${frameIndex + 1}/${started.frameCount}フレーム)`;
+        setVideoExportStatus(`画面を生成・エンコード中: ${percentage}% (${frameIndex + 1}/${started.frameCount}フレーム)`, 'working');
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
     }
     videoCancelButton.disabled = true;
+    exportStage = 'MP4とSRT字幕の保存';
+    setVideoExportStatus('MP4とSRT字幕を保存しています...', 'working');
     const completed = await window.videoApi.finishExport(exportId);
     activeVideoExportId = null;
-    if (!completed.saved) throw new Error(completed.message);
+    if (!completed.saved) throw new Error(completed.message ?? '動画ファイルを保存できませんでした。');
     const chapterVideoStatus = selectedChapter.querySelector<HTMLSpanElement>('.chapter-video-status');
     if (chapterVideoStatus) {
       chapterVideoStatus.textContent = '動画: 最新';
@@ -800,11 +841,16 @@ videoExportButton.addEventListener('click', async () => {
       selectedChapter.dispatchEvent(new Event('chapter-video-state-change'));
     }
     videoExportStatus.textContent = `${completed.message} ${completed.path ?? ''}`;
+    setVideoExportStatus(`${completed.message} ${completed.path ?? ''}`, 'success');
   } catch (error) {
+    if (error instanceof Error && error.message === '動画の書き出しを停止しました。') {
+      setVideoExportStatus(error.message, 'cancelled');
+    } else {
+      showVideoExportFailure(exportStage, error);
+    }
     const exportId = activeVideoExportId;
     activeVideoExportId = null;
     if (exportId) await window.videoApi.cancelExport(exportId).catch(() => false);
-    videoExportStatus.textContent = error instanceof Error ? error.message : '動画を書き出せませんでした。';
   } finally {
     scenarioEditor.inert = false;
     timeline.disabled = false;
@@ -829,7 +875,7 @@ videoCancelButton.addEventListener('click', async () => {
   videoCancelButton.disabled = true;
   activeVideoExportId = null;
   await window.videoApi.cancelExport(exportId);
-  videoExportStatus.textContent = '動画の書き出しを停止しました。';
+  setVideoExportStatus('動画の書き出しを停止しました。', 'cancelled');
 });
 
 voicevoxGenerateButton.addEventListener('click', async () => {
@@ -1000,7 +1046,7 @@ function syncVideoComposition(seconds: number) {
 
   const executionResultText = selectedChapter
     ?.querySelector<HTMLTextAreaElement>('.video-execution-result')?.value.trim() ?? '';
-  const executionAtSeconds = Number(selectedChapter?.querySelector<HTMLInputElement>('.execution-time')?.value ?? 0);
+  const executionAtSeconds = Number(selectedChapter?.querySelector<HTMLInputElement>('.execution-time')?.value ?? DEFAULT_EXECUTION_AT_SECONDS);
   videoResultPreview.textContent = seconds + stageTolerance >= executionAtSeconds ? executionResultText : '';
   videoResultPreview.hidden = showingCredit || videoResultPreview.textContent.length === 0;
 }
@@ -1054,7 +1100,7 @@ async function drawVideoCodePanel(text: string, x: number, y: number, width: num
   videoFrameContext.fillStyle = 'rgba(0, 16, 11, 0.10)';
   videoFrameContext.fillRect(x, y, width, height);
   videoFrameContext.restore();
-  drawVideoTextPanel(text, x, y, width, height - 60, 22, 'left', null);
+  drawVideoTextPanel(text, x + 21, y + 15, width - 21, height - 75, 22, 'left', null);
 }
 
 function drawCreditFrame(chapterTitle: string, creditText: string) {
@@ -1097,7 +1143,7 @@ async function createVideoFrame(frameIndex: number, contentFrames: number, chapt
     }
     videoFrameContext.drawImage(canvas, 0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
     await drawVideoCodePanel(videoCodePreview.textContent ?? '', 48, 54, 1230, 900);
-    drawVideoTextPanel(videoResultPreview.textContent ?? '', 48, 680, 820, 188, 20);
+    drawVideoTextPanel(videoResultPreview.textContent ?? '', 1320, 80, 552, 240, 20);
     drawVideoTextPanel(subtitlePreview.hidden ? '' : subtitlePreview.textContent ?? '', 96, 920, 1728, 110, 40, 'center');
   }
   const blob = await new Promise<Blob>((resolve, reject) => {
@@ -1834,7 +1880,9 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     executionTime.step = '0.1';
     executionTime.required = true;
     executionTime.className = 'execution-time';
-    executionTime.value = String(chapter.executionAtSeconds ?? 0);
+    executionTime.value = String(chapter.executionResult && chapter.executionAtSeconds === 0
+      ? DEFAULT_EXECUTION_AT_SECONDS
+      : chapter.executionAtSeconds ?? DEFAULT_EXECUTION_AT_SECONDS);
     executionTime.disabled = !runCode.checked;
     fieldset.append(makeField('C実行結果の表示時刻（秒）', executionTime));
     executionTime.addEventListener('input', refreshTimelineExtent);
@@ -1994,6 +2042,10 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           sourceCode: code.value,
           sourceInput: runInput.value,
         };
+        if (Number(executionTime.value) === 0) {
+          executionTime.value = String(DEFAULT_EXECUTION_AT_SECONDS);
+          refreshTimelineExtent();
+        }
         fieldset.dataset.executionResult = JSON.stringify(executionResult);
         videoExecutionResult.value = executionResult.videoText;
         markScenarioAsUnconfirmed();
@@ -2179,7 +2231,7 @@ function createBlankChapter(targetMinutes: number): ScenarioDraft['chapters'][nu
     audioAsset: null,
     executionResult: null,
     runCode: false,
-    executionAtSeconds: 0,
+    executionAtSeconds: DEFAULT_EXECUTION_AT_SECONDS,
   };
 }
 
