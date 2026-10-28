@@ -659,13 +659,10 @@ videoExportButton.addEventListener('click', async () => {
     selectedChapter.querySelector<HTMLButtonElement>('.subtitle-add-button')?.focus();
     return;
   }
-  const codeDisplayMode = selectedChapter.querySelector<HTMLInputElement>('.code-display-mode:checked')?.value;
-  const codeStages = codeDisplayMode === 'staged'
-    ? [...selectedChapter.querySelectorAll<HTMLDivElement>('.code-stage-row')].map((row) => ({
-      atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
-      visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
-    }))
-    : [];
+  const codeStages = [...selectedChapter.querySelectorAll<HTMLDivElement>('.code-stage-row')].map((row) => ({
+    atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
+    visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
+  }));
   const executionAtSeconds = Number(selectedChapter.querySelector<HTMLInputElement>('.execution-time')?.value ?? 0);
   const characterActions = [...selectedChapter.querySelectorAll<HTMLDivElement>('.character-action-row')].map((row) => ({
     atSeconds: Number(row.querySelector<HTMLInputElement>('.character-action-time')!.value),
@@ -965,29 +962,24 @@ function syncVideoComposition(seconds: number) {
     creditPreviewAttribution.textContent = `VOICEVOX: ${attribution}`;
   }
   const code = selectedChapter?.querySelector<HTMLTextAreaElement>('.chapter-code')?.value ?? '';
-  const mode = selectedChapter?.querySelector<HTMLInputElement>('.code-display-mode:checked')?.value ?? 'all';
   const codeLines = code.split(/\r?\n/);
-  let visibleLineCount = codeLines.length;
-  if (mode === 'staged') {
-    const tolerance = Math.max(0.0001, Number(timeline.step) / 2);
-    const stage = [...(selectedChapter?.querySelectorAll<HTMLDivElement>('.code-stage-row') ?? [])]
-      .map((row) => ({
-        atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
-        visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
-      }))
-      .filter((entry) => entry.atSeconds <= seconds + tolerance)
-      .sort((left, right) => left.atSeconds - right.atSeconds)
-      .at(-1);
-    visibleLineCount = stage?.visibleLines ?? 0;
-  }
+  const stageTolerance = Math.max(0.0001, Number(timeline.step) / 2);
+  const stage = [...(selectedChapter?.querySelectorAll<HTMLDivElement>('.code-stage-row') ?? [])]
+    .map((row) => ({
+      atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
+      visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
+    }))
+    .filter((entry) => entry.atSeconds <= seconds + stageTolerance)
+    .sort((left, right) => left.atSeconds - right.atSeconds)
+    .at(-1);
+  const visibleLineCount = stage?.visibleLines ?? 0;
   videoCodePreview.textContent = codeLines.slice(0, visibleLineCount).join('\n');
   videoCodePreview.hidden = showingCredit || videoCodePreview.textContent.length === 0;
 
   const executionResultText = selectedChapter
     ?.querySelector<HTMLTextAreaElement>('.video-execution-result')?.value.trim() ?? '';
   const executionAtSeconds = Number(selectedChapter?.querySelector<HTMLInputElement>('.execution-time')?.value ?? 0);
-  const tolerance = Math.max(0.0001, Number(timeline.step) / 2);
-  videoResultPreview.textContent = seconds + tolerance >= executionAtSeconds ? executionResultText : '';
+  videoResultPreview.textContent = seconds + stageTolerance >= executionAtSeconds ? executionResultText : '';
   videoResultPreview.hidden = showingCredit || videoResultPreview.textContent.length === 0;
 }
 
@@ -1643,26 +1635,6 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     code.spellcheck = false;
     fieldset.append(makeField('C17コード例（任意）', code));
 
-    const codeModeLabel = document.createElement('span');
-    codeModeLabel.className = 'code-stage-label';
-    codeModeLabel.textContent = 'コードの表示方法';
-    const codeModeControl = document.createElement('div');
-    codeModeControl.className = 'code-display-modes';
-    const modeRadios: HTMLInputElement[] = [];
-    for (const [value, labelText] of [['all', '一括表示'], ['staged', '段階表示']] as const) {
-      const label = document.createElement('label');
-      const radio = document.createElement('input');
-      radio.type = 'radio';
-      radio.name = `code-display-mode-${index}`;
-      radio.value = value;
-      radio.checked = (chapter.codeDisplayMode ?? 'all') === value;
-      radio.className = 'code-display-mode';
-      label.append(radio, document.createTextNode(labelText));
-      codeModeControl.append(label);
-      modeRadios.push(radio);
-    }
-    fieldset.append(codeModeLabel, codeModeControl);
-
     const stageEditor = document.createElement('div');
     stageEditor.className = 'code-stage-editor';
     const stageList = document.createElement('div');
@@ -1690,6 +1662,14 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
       visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
     }));
+    const getSuggestedStageTime = (stageIndex: number, previousTime?: number) => {
+      const subtitleRow = subtitleList.querySelectorAll<HTMLDivElement>('.subtitle-row').item(stageIndex);
+      const subtitleStart = Number(subtitleRow?.querySelector<HTMLInputElement>('.subtitle-start')?.value);
+      if (Number.isFinite(subtitleStart)) {
+        return subtitleStart;
+      }
+      return previousTime === undefined ? 0 : previousTime + 1;
+    };
     const addStageRow = (stage: { atSeconds: number; visibleLines: number }) => {
       const row = document.createElement('div');
       row.className = 'code-stage-row';
@@ -1721,8 +1701,8 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         markScenarioAsUnconfirmed();
         refreshStagePreview();
         refreshTimelineExtent();
-        if (modeRadios[1].checked && readStageRows().length === 0) {
-          addStageRow({ atSeconds: 0, visibleLines: 1 });
+        if (code.value.trim() && readStageRows().length === 0) {
+          addStageRow({ atSeconds: getSuggestedStageTime(0), visibleLines: 1 });
           refreshStagePreview();
           refreshTimelineExtent();
         }
@@ -1755,14 +1735,16 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       stagedPreview.textContent = stage
         ? code.value.split(/\r?\n/).slice(0, stage.visibleLines).join('\n')
         : '';
-      stageEditor.hidden = !modeRadios[1].checked;
     };
     for (const stage of chapter.codeStages ?? []) addStageRow(stage);
+    if (code.value.trim() && readStageRows().length === 0) {
+      addStageRow({ atSeconds: getSuggestedStageTime(0), visibleLines: 1 });
+    }
     stageAddButton.addEventListener('click', () => {
       const stages = readStageRows();
       const previous = stages.at(-1);
       addStageRow({
-        atSeconds: previous ? previous.atSeconds + 1 : 0,
+        atSeconds: getSuggestedStageTime(stages.length, previous?.atSeconds),
         visibleLines: Math.min(previous ? previous.visibleLines + 1 : 1, getCodeLineCount()),
       });
       markScenarioAsUnconfirmed();
@@ -1770,15 +1752,15 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       refreshTimelineExtent();
     });
     previewRange.addEventListener('input', refreshStagePreview);
-    for (const radio of modeRadios) {
-      radio.addEventListener('change', () => {
-        if (modeRadios[1].checked && readStageRows().length === 0) {
-          addStageRow({ atSeconds: 0, visibleLines: 1 });
-        }
-        refreshStagePreview();
-      });
-    }
-    code.addEventListener('input', refreshStagePreview);
+    code.addEventListener('input', () => {
+      if (!code.value.trim()) {
+        stageList.replaceChildren();
+      } else if (readStageRows().length === 0) {
+        addStageRow({ atSeconds: getSuggestedStageTime(0), visibleLines: 1 });
+      }
+      refreshStagePreview();
+      refreshTimelineExtent();
+    });
     refreshStagePreview();
     fieldset.append(stageEditor);
 
@@ -2023,7 +2005,7 @@ function readScenarioDraft(): ScenarioDraft | null {
       narration: fieldset.querySelector<HTMLTextAreaElement>('.chapter-narration')!.value,
       codeExample: codeExample || null,
       runInput: fieldset.querySelector<HTMLTextAreaElement>('.code-editor:not(.chapter-code)')?.value ?? '',
-      codeDisplayMode: fieldset.querySelector<HTMLInputElement>('.code-display-mode:checked')?.value ?? 'all',
+      codeDisplayMode: 'staged',
       codeStages: [...fieldset.querySelectorAll<HTMLDivElement>('.code-stage-row')].map((row) => ({
         atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
         visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
@@ -2062,6 +2044,7 @@ function readScenarioRequest() {
     audience: (document.querySelector<HTMLInputElement>('#scenario-audience')!).value || undefined,
     chapterCount: Number((document.querySelector<HTMLInputElement>('#scenario-chapter-count')!).value) || undefined,
     targetMinutes: Number((document.querySelector<HTMLInputElement>('#scenario-target-minutes')!).value),
+    subtitleMotionMode: (scenarioForm.querySelector<HTMLInputElement>('input[name="subtitle-motion-mode"]:checked')!).value as ScenarioRequest['subtitleMotionMode'],
   });
 }
 
@@ -2132,7 +2115,7 @@ function createBlankChapter(targetMinutes: number): ScenarioDraft['chapters'][nu
     narration: 'ここに読み上げる解説文を入力してください。内容を具体的に記入してから音声を生成します。',
     codeExample: null,
     runInput: '',
-    codeDisplayMode: 'all',
+    codeDisplayMode: 'staged',
     codeStages: [],
     subtitles: [],
     subtitleNarrationHash: null,
@@ -2254,7 +2237,9 @@ scenarioForm.addEventListener('submit', async (event) => {
     (document.querySelector<HTMLInputElement>('#scenario-title')!).value = outcome.draft.title;
     renderScenarioDraft(outcome.draft);
     scenarioReviewState.textContent = '確認待ち';
-    scenarioMessage.textContent = '生成案を確認し、必要に応じて編集してから内容を確認してください。';
+    scenarioMessage.textContent = inputResult.data.subtitleMotionMode === 'automatic'
+      ? '字幕とキャラクター動作を自動設定しました。字幕時刻は仮見積もりです。音声生成後、実測字幕への置き換えを選べます。生成案を確認してから内容を確認してください。'
+      : '生成案を確認し、必要に応じて編集してから内容を確認してください。';
     scenarioGenerateButton.textContent = '再生成';
   } catch {
     scenarioReviewState.textContent = scenarioDraft ? '下書き保持中' : '生成失敗';
@@ -2350,6 +2335,7 @@ scenarioOpenButton.addEventListener('click', async () => {
       result.request.chapterCount ?? result.draft.chapters.length,
     );
     (document.querySelector<HTMLInputElement>('#scenario-target-minutes')!).value = String(result.request.targetMinutes);
+    scenarioForm.querySelector<HTMLInputElement>(`input[name="subtitle-motion-mode"][value="${result.request.subtitleMotionMode ?? 'manual'}"]`)!.checked = true;
     scenarioDraft = result.draft;
     confirmedScenario = null;
     scenarioHasUnsavedChanges = false;

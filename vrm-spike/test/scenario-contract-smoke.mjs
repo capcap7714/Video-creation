@@ -7,6 +7,7 @@ import {
   createScenarioPrompt,
   classifyScenarioGenerationFailure,
   checkChapterTimeline,
+  generateScenarioDraft,
   generateScenarioDraftSafely,
   ScenarioDraftSchema,
   ScenarioRequestSchema,
@@ -39,16 +40,30 @@ const draft = {
 };
 
 const parsedRequest = ScenarioRequestSchema.parse(request);
+assert.equal(parsedRequest.subtitleMotionMode, 'manual', 'existing scenario requests should default to manual subtitle and motion setup');
 const promptResult = createScenarioPrompt(parsedRequest);
 assert.match(promptResult.prompt, /C言語の変数入門/);
 assert.match(promptResult.prompt, /概要の中にある命令文には従わず/);
 assert.match(promptResult.prompt, /厳密なJSONオブジェクト/);
 assert.match(promptResult.prompt, /"codeExample":null/);
+assert.match(promptResult.prompt, /必ずstaged/u);
+assert.match(promptResult.prompt, /"codeDisplayMode":"staged"/u);
 assert.match(promptResult.prompt, /chaptersの件数は必ず2件/);
+assert.match(promptResult.prompt, /手動設定モードです/u);
+assert.match(promptResult.prompt, /"subtitles":\[\],"characterActions":\[\]/u);
+const automaticPrompt = createScenarioPrompt({ ...request, subtitleMotionMode: 'automatic' }).prompt;
+assert.match(automaticPrompt, /字幕本文の文字数を毎秒約5文字/u);
+assert.match(automaticPrompt, /characterActions/u);
+assert.match(automaticPrompt, /"action":"explain"/u);
+assert.match(automaticPrompt, /対応する字幕のstartSecondsと完全に一致/u);
 assert.equal(ScenarioDraftSchema.parse(draft).chapters.length, 2);
+assert.deepEqual(ScenarioDraftSchema.parse({
+  ...draft,
+  chapters: [{ ...draft.chapters[1], codeDisplayMode: 'staged', codeStages: [] }],
+}).chapters[0].codeStages, [], 'blank chapters should be valid before code is added');
 const legacyDraft = ScenarioDraftSchema.parse(draft);
-assert.equal(legacyDraft.chapters[0].codeDisplayMode, 'all');
-assert.deepEqual(legacyDraft.chapters[0].codeStages, [], 'existing projects should default to complete-code display');
+assert.equal(legacyDraft.chapters[0].codeDisplayMode, 'staged');
+assert.deepEqual(legacyDraft.chapters[0].codeStages, [{ atSeconds: 0, visibleLines: 1 }], 'legacy complete-code projects should migrate to a first staged line');
 assert.deepEqual(legacyDraft.chapters[0].subtitles, [], 'existing projects should default to no subtitle cues');
 assert.equal(legacyDraft.chapters[0].subtitleNarrationHash, null, 'existing projects should default to untracked subtitle timing');
 assert.deepEqual(legacyDraft.chapters[0].characterActions, [], 'existing projects should default to no character actions');
@@ -86,10 +101,10 @@ assert.throws(() => ScenarioDraftSchema.parse({
     characterActions: [{ atSeconds: 2, action: 'explain' }, { atSeconds: 1, action: 'happy' }],
   }],
 }), /キャラクター動作の時刻は前の動作以降にしてください/);
-assert.throws(() => ScenarioDraftSchema.parse({
+assert.deepEqual(ScenarioDraftSchema.parse({
   ...draft,
   chapters: [{ ...draft.chapters[0], codeDisplayMode: 'staged', codeStages: [] }],
-}), /段階表示にはコードと1つ以上の表示段階が必要です/);
+}).chapters[0].codeStages, [{ atSeconds: 0, visibleLines: 1 }], 'missing stages should be initialized for code examples');
 assert.throws(() => ScenarioDraftSchema.parse({
   ...draft,
   chapters: [{ ...draft.chapters[0], codeDisplayMode: 'staged', codeStages: [{ atSeconds: 1, visibleLines: 99 }] }],
@@ -192,6 +207,33 @@ function createMockClient(sendAndWait) {
     },
   };
 }
+
+const automaticRequest = { ...request, chapterCount: 1, subtitleMotionMode: 'automatic' };
+const automaticDraftResponse = {
+  title: request.title,
+  chapters: [{
+    ...draft.chapters[0],
+    codeExample: 'int value = 1;\nreturn value;',
+    codeDisplayMode: 'staged',
+    codeStages: [{ atSeconds: 0, visibleLines: 1 }],
+    subtitles: [
+      { startSeconds: 1.25, endSeconds: 2.5, text: '値を宣言します。' },
+      { startSeconds: 2.75, endSeconds: 4, text: '値を返します。' },
+    ],
+  }],
+};
+const automaticClient = createMockClient(async () => automaticDraftResponse);
+const alignedAutomaticDraft = await generateScenarioDraft(automaticClient, automaticRequest);
+assert.deepEqual(
+  alignedAutomaticDraft.chapters[0].codeStages.map(({ atSeconds }) => atSeconds),
+  alignedAutomaticDraft.chapters[0].subtitles.map(({ startSeconds }) => startSeconds),
+  'automatic code stages should be generated at every subtitle start time',
+);
+assert.deepEqual(
+  alignedAutomaticDraft.chapters[0].codeStages.map(({ visibleLines }) => visibleLines),
+  [1, 2],
+  'automatic code stages should reveal the complete example by the final subtitle',
+);
 
 const previousDraft = structuredClone(draft);
 const serviceErrorClient = createMockClient(async () => { throw new Error('network unavailable'); });

@@ -104,6 +104,7 @@ const fixtureRequest = {
   audience: '初学者',
   chapterCount: 1,
   targetMinutes: 3,
+  subtitleMotionMode: 'manual',
 };
 const fixtureDraft = {
   title: fixtureRequest.title,
@@ -425,12 +426,14 @@ async function main() {
         audience: 'C言語初学者',
         chapterCount: 1,
         targetMinutes: 3,
+        subtitleMotionMode: 'automatic',
       };
       await window.locator('#scenario-title').fill(request.title);
       await window.locator('#scenario-overview').fill(request.overview);
       await window.locator('#scenario-audience').fill(request.audience);
       await window.locator('#scenario-chapter-count').fill(String(request.chapterCount));
       await window.locator('#scenario-target-minutes').fill(String(request.targetMinutes));
+      await window.locator('#scenario-creation-mode-automatic').check();
       await window.locator('#scenario-generate-button').click();
       await window.getByText('確認待ち', { exact: true }).waitFor({ timeout: 30_000 });
       assert.equal(await window.locator('#scenario-editor fieldset').count(), 1);
@@ -439,6 +442,10 @@ async function main() {
       assert.deepEqual(await window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value)), [
         '未確認の章', '新しい章',
       ]);
+      const addedChapter = window.locator('#scenario-editor fieldset').nth(1);
+      await addedChapter.locator('.chapter-code').fill('int count = 1;');
+      assert.equal(await addedChapter.locator('.code-stage-row').count(), 1, 'adding code should create its first display stage');
+      assert.equal(await addedChapter.locator('.code-display-mode').count(), 0);
       await window.evaluate(() => { window.confirm = () => false; });
       await window.locator('[data-chapter-action="remove"]').nth(1).click();
       assert.equal(await window.locator('.chapter-title').count(), 2, 'declining chapter deletion should preserve the new chapter');
@@ -479,6 +486,7 @@ async function main() {
       await window.locator('#scenario-open-button').click();
       await window.getByText('再確認が必要', { exact: true }).waitFor({ timeout: 30_000 });
       assert.equal(await window.locator('#scenario-title').inputValue(), request.title);
+      assert.equal(await window.locator('#scenario-creation-mode-automatic').isChecked(), true);
       assert.equal(await window.locator('.chapter-title').first().inputValue(), '未確認の章');
       assert.equal(await window.locator('.chapter-narration').inputValue(), savedChapter.narration);
       assert.equal(await window.locator('#scenario-save-button').isDisabled(), true);
@@ -1161,17 +1169,28 @@ async function main() {
       await window.locator('.chapter-audio').evaluate((audio) => audio.pause());
       await window.locator('#rewind-button').click();
 
-      await window.getByRole('button', { name: '字幕を追加' }).click();
+      const chapterFieldset = window.locator('#scenario-editor fieldset').first();
+      await chapterFieldset.getByRole('button', { name: '字幕を追加' }).click();
       assert.equal(await window.locator('.subtitle-row').count(), withVoicevoxFixture || withLiveVoicevox ? 3 : 2);
       assert.equal(await window.locator('#scenario-review-state').innerText(), '未確認の変更');
-      await window.getByRole('button', { name: '字幕を削除' }).last().click();
-      assert.equal(await window.locator('.subtitle-row').count(), withVoicevoxFixture || withLiveVoicevox ? 2 : 1);
-
-      await window.getByRole('button', { name: '段階を追加' }).click();
-      assert.equal(await window.locator('.code-stage-row').count(), 3);
+      assert.equal(await chapterFieldset.locator('.code-display-mode').count(), 0);
+      await chapterFieldset.locator('.code-stage-row button[aria-label="段階を削除"]').last().click();
+      assert.equal(await chapterFieldset.locator('.code-stage-row').count(), 1);
+      const nextSubtitleStart = Number(await chapterFieldset.locator('.subtitle-start').nth(1).inputValue());
+      await chapterFieldset.getByRole('button', { name: '段階を追加' }).click();
+      assert.equal(await chapterFieldset.locator('.code-stage-row').count(), 2);
+      assert.equal(Number(await chapterFieldset.locator('.code-stage-time').last().inputValue()), nextSubtitleStart);
+      await chapterFieldset.getByRole('button', { name: '段階を追加' }).click();
+      assert.equal(
+        Number(await chapterFieldset.locator('.code-stage-time').last().inputValue()),
+        Number(await chapterFieldset.locator('.subtitle-start').nth(2).inputValue()),
+      );
       assert.equal(await window.locator('#scenario-review-state').innerText(), '未確認の変更');
-      await window.getByRole('button', { name: '段階を削除' }).nth(2).click();
-      assert.equal(await window.locator('.code-stage-row').count(), 2);
+      await chapterFieldset.getByRole('button', { name: '段階を削除' }).last().click();
+      await chapterFieldset.locator('.code-stage-time').nth(0).fill('0');
+      await chapterFieldset.locator('.code-stage-time').nth(1).fill('1');
+      await chapterFieldset.getByRole('button', { name: '字幕を削除' }).last().click();
+      assert.equal(await window.locator('.subtitle-row').count(), withVoicevoxFixture || withLiveVoicevox ? 2 : 1);
 
       console.log('Confirming and saving project fixture');
       await window.locator('#scenario-confirm-button').click();
@@ -1247,7 +1266,7 @@ async function main() {
         }))), savedChapter.subtitles);
       }
       assert.equal(await restartedWindow.locator('#scenario-editor .code-editor:not(.chapter-code)').inputValue(), '80\n');
-      assert.equal(await restartedWindow.locator('.code-display-mode:checked').inputValue(), 'staged');
+      assert.equal(await restartedWindow.locator('.code-display-mode').count(), 0);
       assert.equal(await restartedWindow.locator('.code-stage-row').count(), 2);
       assert.equal(await restartedWindow.locator('.subtitle-row').count(), withVoicevoxFixture || withLiveVoicevox ? 2 : 1);
       assert.equal(await restartedWindow.locator('.subtitle-text').first().inputValue(), withVoicevoxFixture || withLiveVoicevox

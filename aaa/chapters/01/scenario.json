@@ -1,802 +1,827 @@
 {
   "schemaVersion": 1,
   "chapterId": "01",
-  "title": "Hello worldを表示する",
-  "learningObjective": "ヘッダ、main関数、printf関数を使った基本的なCプログラムを書き、実行結果を確認する。",
-  "targetMinutes": 1,
-  "narration": "stdio.hを読み込むとprintfを使えます。main関数の中にprintfを書き、文末にセミコロンを付けます。ダブルクォーテーションで囲んだ文字列を表示し、\\nで改行します。コードを実行して、Hello worldと表示されることを確認しましょう。",
-  "codeExample": "#include <stdio.h>\n\nint main(void) {\n    printf(\"Hello world\\n\");\n    return 0;\n}",
+  "title": "変数を宣言して値を代入する",
+  "learningObjective": "変数の宣言と値の代入を理解し、簡単なCプログラムで使えるようになる。",
+  "targetMinutes": 3,
+  "narration": "Cのプログラムは、main関数から処理を始めます。変数を使う前に、型と名前を宣言します。int count; は、整数用のcountを宣言します。count = 3; と書くと、変数に3を代入します。最後に値を表示し、この例では3が出力されます。",
+  "codeExample": "#include <stdio.h>\nint main(void) {\n    int count;\n    count = 3;\n    printf(\"%d\\n\", count);\n    return 0;\n}",
   "runInput": "",
   "codeDisplayMode": "staged",
   "codeStages": [
     {
       "atSeconds": 0,
-      "visibleLines": 1
-    },
-    {
-      "atSeconds": 1,
       "visibleLines": 2
     },
     {
-      "atSeconds": 2,
+      "atSeconds": 5,
       "visibleLines": 3
+    },
+    {
+      "atSeconds": 9.2,
+      "visibleLines": 4
+    },
+    {
+      "atSeconds": 13.8,
+      "visibleLines": 5
+    },
+    {
+      "atSeconds": 18.6,
+      "visibleLines": 7
     }
   ],
   "subtitles": [
     {
-      "startSeconds": 0.1,
-      "endSeconds": 5.137,
-      "text": "stdio.hを読み込むとprintfを使えます。"
+      "startSeconds": 0,
+      "endSeconds": 5,
+      "text": "Cのプログラムは、main関数から処理を始めます。"
     },
     {
-      "startSeconds": 5.337,
-      "endSeconds": 11.473,
-      "text": "main関数の中にprintfを書き、文末にセミコロンを付けます。"
+      "startSeconds": 5,
+      "endSeconds": 9.2,
+      "text": "変数を使う前に、型と名前を宣言します。"
     },
     {
-      "startSeconds": 11.673,
-      "endSeconds": 16.199,
-      "text": "ダブルクォーテーションで囲んだ文字列を表示し、\\nで改行します。"
+      "startSeconds": 9.2,
+      "endSeconds": 13.8,
+      "text": "int count; は、整数用のcountを宣言します。"
     },
     {
-      "startSeconds": 16.399,
-      "endSeconds": 21.233,
-      "text": "コードを実行して、Hello worldと表示されることを確認しましょう。"
+      "startSeconds": 13.8,
+      "endSeconds": 18.6,
+      "text": "count = 3; と書くと、変数に3を代入します。"
+    },
+    {
+      "startSeconds": 18.6,
+      "endSeconds": 23.4,
+      "text": "最後に値を表示し、この例では3が出力されます。"
     }
   ],
-  "subtitleNarrationHash": "3dcb16c50585f33af4e9da4e878296888f79bc20fc5fc267887552c0fcb961dc",
-  "characterActions": [],
+  "subtitleNarrationHash": null,
+  "characterActions": [
+    {
+      "atSeconds": 0,
+      "action": "explain"
+    },
+    {
+      "atSeconds": 5,
+      "action": "attention"
+    },
+    {
+      "atSeconds": 13.8,
+      "action": "explain"
+    },
+    {
+      "atSeconds": 18.6,
+      "action": "happy"
+    }
+  ],
   "audioAsset": {
     "path": "audio/narration.wav",
-    "durationSeconds": 21.333333,
+    "durationSeconds": 23.914667,
     "styleId": 2,
     "speakerName": "四国めたん",
-    "narrationHash": "3dcb16c50585f33af4e9da4e878296888f79bc20fc5fc267887552c0fcb961dc",
+    "narrationHash": "9f9438efc06ae3469f898b4306044201a25acf1a5cc4a56cf3f7e8d41f5d0dc5",
     "mouthTimeline": [
       {
-        "start": 0.1,
-        "end": 0.221,
-        "expression": "ee"
-      },
-      {
-        "start": 0.275,
-        "end": 0.356,
-        "expression": "ou"
-      },
-      {
-        "start": 0.433,
-        "end": 0.52,
+        "start": 0.2,
+        "end": 0.29,
         "expression": "ih"
       },
       {
-        "start": 0.52,
-        "end": 0.603,
+        "start": 0.29,
+        "end": 0.369,
         "expression": "ih"
       },
       {
-        "start": 0.663,
-        "end": 0.766,
-        "expression": "ih"
-      },
-      {
-        "start": 0.766,
-        "end": 0.854,
-        "expression": "ih"
-      },
-      {
-        "start": 0.854,
-        "end": 0.991,
-        "expression": "aa"
-      },
-      {
-        "start": 0.991,
-        "end": 1.078,
-        "expression": "ih"
-      },
-      {
-        "start": 1.078,
-        "end": 1.187,
+        "start": 0.419,
+        "end": 0.507,
         "expression": "oh"
       },
       {
-        "start": 1.187,
-        "end": 1.332,
+        "start": 0.565,
+        "end": 0.614,
+        "expression": "ou"
+      },
+      {
+        "start": 0.646,
+        "end": 0.718,
         "expression": "oh"
       },
       {
-        "start": 1.737,
-        "end": 1.838,
+        "start": 0.769,
+        "end": 0.829,
+        "expression": "ou"
+      },
+      {
+        "start": 0.858,
+        "end": 0.946,
+        "expression": "aa"
+      },
+      {
+        "start": 1.007,
+        "end": 1.07,
+        "expression": "ou"
+      },
+      {
+        "start": 1.128,
+        "end": 1.273,
+        "expression": "aa"
+      },
+      {
+        "start": 1.615,
+        "end": 1.695,
         "expression": "ee"
       },
       {
-        "start": 1.838,
-        "end": 1.923,
+        "start": 1.762,
+        "end": 1.875,
+        "expression": "ou"
+      },
+      {
+        "start": 1.875,
+        "end": 2.005,
+        "expression": "ee"
+      },
+      {
+        "start": 2.005,
+        "end": 2.111,
+        "expression": "ee"
+      },
+      {
+        "start": 2.111,
+        "end": 2.241,
+        "expression": "aa"
+      },
+      {
+        "start": 2.241,
+        "end": 2.335,
         "expression": "ih"
       },
       {
-        "start": 2.008,
-        "end": 2.077,
-        "expression": "ih"
+        "start": 2.335,
+        "end": 2.421,
+        "expression": "ee"
       },
       {
-        "start": 2.077,
-        "end": 2.192,
+        "start": 2.473,
+        "end": 2.562,
+        "expression": "ou"
+      },
+      {
+        "start": 2.625,
+        "end": 2.74,
+        "expression": "aa"
+      },
+      {
+        "start": 2.863,
+        "end": 2.931,
+        "expression": "ou"
+      },
+      {
+        "start": 2.931,
+        "end": 2.998,
+        "expression": "ou"
+      },
+      {
+        "start": 3.055,
+        "end": 3.122,
+        "expression": "aa"
+      },
+      {
+        "start": 3.148,
+        "end": 3.22,
+        "expression": "aa"
+      },
+      {
+        "start": 3.302,
+        "end": 3.376,
         "expression": "oh"
       },
       {
-        "start": 2.251,
-        "end": 2.321,
+        "start": 3.412,
+        "end": 3.482,
+        "expression": "ih"
+      },
+      {
+        "start": 3.482,
+        "end": 3.586,
         "expression": "oh"
       },
       {
-        "start": 2.374,
-        "end": 2.446,
+        "start": 3.658,
+        "end": 3.732,
+        "expression": "aa"
+      },
+      {
+        "start": 3.793,
+        "end": 3.847,
         "expression": "ih"
       },
       {
-        "start": 2.506,
-        "end": 2.57,
+        "start": 3.9,
+        "end": 3.968,
+        "expression": "ee"
+      },
+      {
+        "start": 4.026,
+        "end": 4.113,
+        "expression": "aa"
+      },
+      {
+        "start": 4.171,
+        "end": 4.231,
+        "expression": "ou"
+      },
+      {
+        "start": 4.491,
+        "end": 4.604,
+        "expression": "ee"
+      },
+      {
+        "start": 4.736,
+        "end": 4.821,
+        "expression": "ou"
+      },
+      {
+        "start": 4.821,
+        "end": 4.886,
+        "expression": "ou"
+      },
+      {
+        "start": 4.886,
+        "end": 5.011,
         "expression": "oh"
       },
       {
-        "start": 2.613,
-        "end": 2.682,
+        "start": 5.073,
+        "end": 5.123,
         "expression": "ou"
       },
       {
-        "start": 2.732,
-        "end": 2.817,
-        "expression": "oh"
-      },
-      {
-        "start": 2.896,
-        "end": 2.981,
-        "expression": "ih"
-      },
-      {
-        "start": 2.981,
-        "end": 3.065,
-        "expression": "ih"
-      },
-      {
-        "start": 3.065,
-        "end": 3.174,
+        "start": 5.193,
+        "end": 5.292,
         "expression": "aa"
       },
       {
-        "start": 3.174,
-        "end": 3.275,
-        "expression": "aa"
-      },
-      {
-        "start": 3.318,
-        "end": 3.395,
+        "start": 5.292,
+        "end": 5.357,
         "expression": "ou"
       },
       {
-        "start": 3.395,
-        "end": 3.521,
+        "start": 5.419,
+        "end": 5.521,
         "expression": "aa"
       },
       {
-        "start": 3.521,
-        "end": 3.608,
+        "start": 5.521,
+        "end": 5.594,
+        "expression": "ee"
+      },
+      {
+        "start": 5.654,
+        "end": 5.784,
         "expression": "ih"
-      },
-      {
-        "start": 3.608,
-        "end": 3.696,
-        "expression": "ee"
-      },
-      {
-        "start": 3.751,
-        "end": 3.836,
-        "expression": "ou"
-      },
-      {
-        "start": 3.904,
-        "end": 4,
-        "expression": "ih"
-      },
-      {
-        "start": 4,
-        "end": 4.094,
-        "expression": "ih"
-      },
-      {
-        "start": 4.094,
-        "end": 4.206,
-        "expression": "ee"
-      },
-      {
-        "start": 4.273,
-        "end": 4.336,
-        "expression": "ou"
-      },
-      {
-        "start": 4.336,
-        "end": 4.446,
-        "expression": "oh"
-      },
-      {
-        "start": 4.505,
-        "end": 4.562,
-        "expression": "ou"
-      },
-      {
-        "start": 4.633,
-        "end": 4.729,
-        "expression": "aa"
-      },
-      {
-        "start": 4.729,
-        "end": 4.792,
-        "expression": "ee"
-      },
-      {
-        "start": 4.852,
-        "end": 4.936,
-        "expression": "aa"
-      },
-      {
-        "start": 4.997,
-        "end": 5.095,
-        "expression": "ou"
-      },
-      {
-        "start": 5.337,
-        "end": 5.445,
-        "expression": "ee"
-      },
-      {
-        "start": 5.506,
-        "end": 5.619,
-        "expression": "ou"
-      },
-      {
-        "start": 5.619,
-        "end": 5.75,
-        "expression": "ee"
-      },
-      {
-        "start": 5.75,
-        "end": 5.856,
-        "expression": "ee"
-      },
-      {
-        "start": 5.856,
-        "end": 5.986,
-        "expression": "aa"
-      },
-      {
-        "start": 5.986,
-        "end": 6.08,
-        "expression": "ih"
-      },
-      {
-        "start": 6.08,
-        "end": 6.166,
-        "expression": "ee"
       },
       {
         "start": 6.218,
-        "end": 6.307,
-        "expression": "ou"
-      },
-      {
-        "start": 6.37,
-        "end": 6.487,
+        "end": 6.292,
         "expression": "aa"
       },
       {
-        "start": 6.617,
-        "end": 6.688,
-        "expression": "ou"
+        "start": 6.34,
+        "end": 6.421,
+        "expression": "aa"
       },
       {
-        "start": 6.688,
-        "end": 6.75,
-        "expression": "ou"
-      },
-      {
-        "start": 6.796,
-        "end": 6.86,
+        "start": 6.475,
+        "end": 6.525,
         "expression": "oh"
       },
       {
-        "start": 6.904,
-        "end": 6.993,
+        "start": 6.57,
+        "end": 6.653,
         "expression": "aa"
       },
       {
-        "start": 7.047,
-        "end": 7.122,
+        "start": 6.714,
+        "end": 6.802,
         "expression": "aa"
       },
       {
-        "start": 7.171,
-        "end": 7.258,
-        "expression": "ih"
-      },
-      {
-        "start": 7.336,
-        "end": 7.422,
-        "expression": "ih"
-      },
-      {
-        "start": 7.422,
-        "end": 7.504,
-        "expression": "ih"
-      },
-      {
-        "start": 7.504,
-        "end": 7.612,
-        "expression": "aa"
-      },
-      {
-        "start": 7.612,
-        "end": 7.715,
-        "expression": "aa"
-      },
-      {
-        "start": 7.758,
-        "end": 7.835,
-        "expression": "ou"
-      },
-      {
-        "start": 7.835,
-        "end": 7.961,
-        "expression": "aa"
-      },
-      {
-        "start": 7.961,
-        "end": 8.048,
-        "expression": "ih"
-      },
-      {
-        "start": 8.048,
-        "end": 8.136,
+        "start": 6.802,
+        "end": 6.88,
         "expression": "ee"
       },
       {
-        "start": 8.191,
-        "end": 8.276,
-        "expression": "ou"
+        "start": 6.88,
+        "end": 6.991,
+        "expression": "oh"
       },
       {
-        "start": 8.344,
-        "end": 8.44,
-        "expression": "ih"
-      },
-      {
-        "start": 8.44,
-        "end": 8.533,
-        "expression": "ih"
-      },
-      {
-        "start": 8.533,
-        "end": 8.646,
+        "start": 7.085,
+        "end": 7.189,
         "expression": "ee"
       },
       {
-        "start": 8.713,
-        "end": 8.77,
-        "expression": "ou"
-      },
-      {
-        "start": 8.77,
-        "end": 8.878,
-        "expression": "oh"
-      },
-      {
-        "start": 8.926,
-        "end": 9.017,
-        "expression": "aa"
-      },
-      {
-        "start": 9.097,
-        "end": 9.211,
-        "expression": "ih"
-      },
-      {
-        "start": 9.727,
-        "end": 9.804,
-        "expression": "ou"
-      },
-      {
-        "start": 9.912,
-        "end": 10.007,
-        "expression": "aa"
-      },
-      {
-        "start": 10.077,
-        "end": 10.129,
-        "expression": "ou"
-      },
-      {
-        "start": 10.172,
-        "end": 10.248,
-        "expression": "ih"
-      },
-      {
-        "start": 10.312,
-        "end": 10.386,
+        "start": 7.295,
+        "end": 7.4,
         "expression": "ee"
       },
       {
-        "start": 10.439,
-        "end": 10.515,
+        "start": 7.491,
+        "end": 7.558,
         "expression": "ih"
       },
       {
-        "start": 10.57,
-        "end": 10.637,
-        "expression": "oh"
+        "start": 7.607,
+        "end": 7.695,
+        "expression": "aa"
       },
       {
-        "start": 10.674,
-        "end": 10.786,
-        "expression": "oh"
-      },
-      {
-        "start": 10.844,
-        "end": 10.953,
-        "expression": "oh"
-      },
-      {
-        "start": 11.012,
-        "end": 11.059,
+        "start": 7.754,
+        "end": 7.851,
         "expression": "ou"
       },
       {
-        "start": 11.122,
-        "end": 11.19,
+        "start": 8.089,
+        "end": 8.247,
+        "expression": "aa"
+      },
+      {
+        "start": 8.247,
+        "end": 8.331,
+        "expression": "ih"
+      },
+      {
+        "start": 8.331,
+        "end": 8.435,
         "expression": "ee"
       },
       {
-        "start": 11.243,
-        "end": 11.325,
+        "start": 8.488,
+        "end": 8.577,
+        "expression": "ou"
+      },
+      {
+        "start": 8.655,
+        "end": 8.736,
+        "expression": "ih"
+      },
+      {
+        "start": 8.736,
+        "end": 8.838,
+        "expression": "ih"
+      },
+      {
+        "start": 9.322,
+        "end": 9.419,
+        "expression": "ih"
+      },
+      {
+        "start": 9.419,
+        "end": 9.511,
+        "expression": "ih"
+      },
+      {
+        "start": 9.511,
+        "end": 9.62,
+        "expression": "oh"
+      },
+      {
+        "start": 9.62,
+        "end": 9.722,
+        "expression": "oh"
+      },
+      {
+        "start": 9.805,
+        "end": 9.872,
+        "expression": "ou"
+      },
+      {
+        "start": 9.872,
+        "end": 9.95,
+        "expression": "ou"
+      },
+      {
+        "start": 9.95,
+        "end": 10.038,
+        "expression": "ee"
+      },
+      {
+        "start": 10.091,
+        "end": 10.178,
+        "expression": "ou"
+      },
+      {
+        "start": 10.255,
+        "end": 10.338,
+        "expression": "ih"
+      },
+      {
+        "start": 10.338,
+        "end": 10.447,
+        "expression": "ih"
+      },
+      {
+        "start": 10.959,
+        "end": 11.141,
         "expression": "aa"
       },
       {
-        "start": 11.387,
-        "end": 11.473,
+        "start": 11.662,
+        "end": 11.773,
+        "expression": "ee"
+      },
+      {
+        "start": 11.773,
+        "end": 11.866,
+        "expression": "ee"
+      },
+      {
+        "start": 11.96,
+        "end": 12.05,
         "expression": "ou"
       },
       {
-        "start": 11.711,
-        "end": 11.79,
-        "expression": "aa"
-      },
-      {
-        "start": 11.846,
-        "end": 11.912,
+        "start": 12.05,
+        "end": 12.123,
         "expression": "ou"
       },
       {
-        "start": 11.95,
-        "end": 12.037,
-        "expression": "ou"
-      },
-      {
-        "start": 12.098,
-        "end": 12.162,
-        "expression": "ou"
-      },
-      {
-        "start": 12.162,
+        "start": 12.182,
         "end": 12.254,
         "expression": "oh"
       },
       {
         "start": 12.254,
-        "end": 12.371,
+        "end": 12.322,
         "expression": "oh"
       },
       {
-        "start": 12.432,
-        "end": 12.514,
-        "expression": "ee"
-      },
-      {
-        "start": 12.514,
-        "end": 12.592,
-        "expression": "ee"
-      },
-      {
-        "start": 12.691,
-        "end": 12.786,
+        "start": 12.372,
+        "end": 12.447,
         "expression": "oh"
       },
       {
-        "start": 12.865,
-        "end": 12.936,
-        "expression": "ee"
-      },
-      {
-        "start": 12.984,
-        "end": 13.057,
-        "expression": "aa"
-      },
-      {
-        "start": 13.117,
-        "end": 13.227,
-        "expression": "oh"
-      },
-      {
-        "start": 13.305,
-        "end": 13.38,
-        "expression": "aa"
-      },
-      {
-        "start": 13.441,
-        "end": 13.52,
-        "expression": "oh"
-      },
-      {
-        "start": 13.583,
-        "end": 13.629,
+        "start": 12.533,
+        "end": 12.626,
         "expression": "ih"
       },
       {
-        "start": 13.661,
-        "end": 13.756,
-        "expression": "ee"
+        "start": 12.626,
+        "end": 12.708,
+        "expression": "ih"
       },
       {
-        "start": 13.842,
-        "end": 13.902,
+        "start": 12.708,
+        "end": 12.812,
+        "expression": "oh"
+      },
+      {
+        "start": 12.812,
+        "end": 12.911,
+        "expression": "oh"
+      },
+      {
+        "start": 12.994,
+        "end": 13.061,
         "expression": "ou"
       },
       {
-        "start": 13.902,
-        "end": 14.012,
-        "expression": "oh"
+        "start": 13.061,
+        "end": 13.138,
+        "expression": "ou"
       },
       {
-        "start": 14.111,
-        "end": 14.187,
-        "expression": "oh"
-      },
-      {
-        "start": 14.187,
-        "end": 14.271,
-        "expression": "oh"
-      },
-      {
-        "start": 14.337,
-        "end": 14.383,
-        "expression": "ih"
-      },
-      {
-        "start": 14.475,
-        "end": 14.607,
-        "expression": "ih"
-      },
-      {
-        "start": 14.995,
-        "end": 15.089,
+        "start": 13.138,
+        "end": 13.226,
         "expression": "ee"
       },
       {
-        "start": 15.136,
-        "end": 15.207,
+        "start": 13.281,
+        "end": 13.363,
         "expression": "ou"
       },
       {
-        "start": 15.265,
-        "end": 15.357,
+        "start": 13.431,
+        "end": 13.524,
+        "expression": "ih"
+      },
+      {
+        "start": 13.524,
+        "end": 13.601,
+        "expression": "ih"
+      },
+      {
+        "start": 13.601,
+        "end": 13.709,
+        "expression": "oh"
+      },
+      {
+        "start": 13.802,
+        "end": 13.909,
         "expression": "ee"
       },
       {
-        "start": 15.419,
-        "end": 15.519,
-        "expression": "aa"
-      },
-      {
-        "start": 15.519,
-        "end": 15.599,
-        "expression": "ih"
-      },
-      {
-        "start": 15.678,
-        "end": 15.753,
-        "expression": "oh"
-      },
-      {
-        "start": 15.753,
-        "end": 15.83,
-        "expression": "oh"
-      },
-      {
-        "start": 15.876,
-        "end": 15.942,
-        "expression": "ih"
-      },
-      {
-        "start": 15.995,
-        "end": 16.085,
-        "expression": "aa"
-      },
-      {
-        "start": 16.143,
-        "end": 16.199,
-        "expression": "ou"
-      },
-      {
-        "start": 16.476,
-        "end": 16.566,
-        "expression": "oh"
-      },
-      {
-        "start": 16.566,
-        "end": 16.651,
-        "expression": "oh"
-      },
-      {
-        "start": 16.699,
-        "end": 16.777,
-        "expression": "oh"
-      },
-      {
-        "start": 16.777,
-        "end": 16.861,
-        "expression": "oh"
-      },
-      {
-        "start": 16.933,
-        "end": 17.01,
-        "expression": "ih"
-      },
-      {
-        "start": 17.136,
-        "end": 17.206,
-        "expression": "oh"
-      },
-      {
-        "start": 17.206,
-        "end": 17.3,
-        "expression": "oh"
-      },
-      {
-        "start": 17.337,
-        "end": 17.388,
-        "expression": "ih"
-      },
-      {
-        "start": 17.446,
-        "end": 17.57,
+        "start": 14.017,
+        "end": 14.122,
         "expression": "ee"
       },
       {
-        "start": 17.924,
-        "end": 17.986,
-        "expression": "aa"
-      },
-      {
-        "start": 18.024,
-        "end": 18.116,
-        "expression": "oh"
-      },
-      {
-        "start": 18.116,
-        "end": 18.258,
-        "expression": "oh"
-      },
-      {
-        "start": 18.672,
-        "end": 18.769,
-        "expression": "aa"
-      },
-      {
-        "start": 18.769,
-        "end": 18.877,
-        "expression": "aa"
-      },
-      {
-        "start": 18.914,
-        "end": 18.982,
-        "expression": "ou"
-      },
-      {
-        "start": 19.025,
-        "end": 19.099,
-        "expression": "oh"
-      },
-      {
-        "start": 19.148,
-        "end": 19.225,
-        "expression": "oh"
-      },
-      {
-        "start": 19.316,
-        "end": 19.392,
-        "expression": "oh"
-      },
-      {
-        "start": 19.392,
-        "end": 19.478,
-        "expression": "oh"
-      },
-      {
-        "start": 19.532,
-        "end": 19.585,
+        "start": 14.214,
+        "end": 14.28,
         "expression": "ih"
       },
       {
-        "start": 19.65,
-        "end": 19.733,
+        "start": 14.329,
+        "end": 14.417,
         "expression": "aa"
       },
       {
-        "start": 19.768,
-        "end": 19.831,
+        "start": 14.477,
+        "end": 14.574,
+        "expression": "ou"
+      },
+      {
+        "start": 14.874,
+        "end": 14.978,
+        "expression": "ih"
+      },
+      {
+        "start": 14.978,
+        "end": 15.071,
+        "expression": "ih"
+      },
+      {
+        "start": 15.071,
+        "end": 15.18,
+        "expression": "oh"
+      },
+      {
+        "start": 15.18,
+        "end": 15.281,
+        "expression": "oh"
+      },
+      {
+        "start": 15.365,
+        "end": 15.432,
+        "expression": "ou"
+      },
+      {
+        "start": 15.432,
+        "end": 15.509,
+        "expression": "ou"
+      },
+      {
+        "start": 15.509,
+        "end": 15.597,
         "expression": "ee"
       },
       {
-        "start": 19.863,
-        "end": 19.94,
+        "start": 15.651,
+        "end": 15.737,
         "expression": "ou"
       },
       {
-        "start": 19.992,
-        "end": 20.06,
-        "expression": "oh"
+        "start": 15.815,
+        "end": 15.903,
+        "expression": "ih"
       },
       {
-        "start": 20.118,
-        "end": 20.189,
-        "expression": "oh"
+        "start": 15.903,
+        "end": 16.018,
+        "expression": "ih"
       },
       {
-        "start": 20.189,
-        "end": 20.279,
-        "expression": "oh"
-      },
-      {
-        "start": 20.326,
-        "end": 20.403,
+        "start": 16.628,
+        "end": 16.758,
         "expression": "aa"
       },
       {
-        "start": 20.461,
-        "end": 20.517,
+        "start": 17.384,
+        "end": 17.46,
+        "expression": "oh"
+      },
+      {
+        "start": 17.513,
+        "end": 17.595,
+        "expression": "aa"
+      },
+      {
+        "start": 17.645,
+        "end": 17.691,
         "expression": "ou"
       },
       {
-        "start": 20.577,
-        "end": 20.682,
+        "start": 17.762,
+        "end": 17.894,
+        "expression": "oh"
+      },
+      {
+        "start": 18.277,
+        "end": 18.378,
+        "expression": "ee"
+      },
+      {
+        "start": 18.512,
+        "end": 18.589,
+        "expression": "ou"
+      },
+      {
+        "start": 18.589,
+        "end": 18.647,
+        "expression": "ou"
+      },
+      {
+        "start": 18.692,
+        "end": 18.77,
         "expression": "ih"
       },
       {
-        "start": 20.782,
-        "end": 20.85,
-        "expression": "ih"
-      },
-      {
-        "start": 20.896,
-        "end": 20.98,
+        "start": 18.85,
+        "end": 18.963,
         "expression": "aa"
       },
       {
-        "start": 21.081,
-        "end": 21.163,
+        "start": 19.019,
+        "end": 19.112,
         "expression": "oh"
       },
       {
-        "start": 21.163,
-        "end": 21.233,
+        "start": 19.163,
+        "end": 19.278,
+        "expression": "aa"
+      },
+      {
+        "start": 19.278,
+        "end": 19.354,
+        "expression": "ih"
+      },
+      {
+        "start": 19.455,
+        "end": 19.518,
+        "expression": "ou"
+      },
+      {
+        "start": 19.518,
+        "end": 19.581,
+        "expression": "ou"
+      },
+      {
+        "start": 19.626,
+        "end": 19.696,
+        "expression": "ih"
+      },
+      {
+        "start": 19.747,
+        "end": 19.837,
+        "expression": "aa"
+      },
+      {
+        "start": 19.896,
+        "end": 19.932,
+        "expression": "ou"
+      },
+      {
+        "start": 20.213,
+        "end": 20.323,
+        "expression": "aa"
+      },
+      {
+        "start": 20.323,
+        "end": 20.398,
+        "expression": "ih"
+      },
+      {
+        "start": 20.453,
+        "end": 20.53,
         "expression": "oh"
+      },
+      {
+        "start": 20.568,
+        "end": 20.632,
+        "expression": "ih"
+      },
+      {
+        "start": 20.684,
+        "end": 20.764,
+        "expression": "ee"
+      },
+      {
+        "start": 20.764,
+        "end": 20.883,
+        "expression": "oh"
+      },
+      {
+        "start": 20.981,
+        "end": 21.055,
+        "expression": "oh"
+      },
+      {
+        "start": 21.055,
+        "end": 21.139,
+        "expression": "oh"
+      },
+      {
+        "start": 21.204,
+        "end": 21.247,
+        "expression": "ih"
+      },
+      {
+        "start": 21.341,
+        "end": 21.476,
+        "expression": "ih"
+      },
+      {
+        "start": 21.857,
+        "end": 21.908,
+        "expression": "oh"
+      },
+      {
+        "start": 21.954,
+        "end": 22.028,
+        "expression": "oh"
+      },
+      {
+        "start": 22.065,
+        "end": 22.139,
+        "expression": "ee"
+      },
+      {
+        "start": 22.139,
+        "end": 22.212,
+        "expression": "ee"
+      },
+      {
+        "start": 22.261,
+        "end": 22.328,
+        "expression": "ee"
+      },
+      {
+        "start": 22.376,
+        "end": 22.452,
+        "expression": "aa"
+      },
+      {
+        "start": 22.547,
+        "end": 22.661,
+        "expression": "aa"
+      },
+      {
+        "start": 22.75,
+        "end": 22.835,
+        "expression": "aa"
+      },
+      {
+        "start": 22.868,
+        "end": 22.93,
+        "expression": "ou"
+      },
+      {
+        "start": 23.014,
+        "end": 23.079,
+        "expression": "ou"
+      },
+      {
+        "start": 23.121,
+        "end": 23.189,
+        "expression": "oh"
+      },
+      {
+        "start": 23.237,
+        "end": 23.28,
+        "expression": "ou"
+      },
+      {
+        "start": 23.346,
+        "end": 23.421,
+        "expression": "aa"
+      },
+      {
+        "start": 23.453,
+        "end": 23.513,
+        "expression": "ee"
+      },
+      {
+        "start": 23.569,
+        "end": 23.654,
+        "expression": "aa"
+      },
+      {
+        "start": 23.712,
+        "end": 23.814,
+        "expression": "ou"
       }
     ]
   },
   "executionResult": {
     "status": "success",
-    "stdout": "Hello world\r\n",
+    "stdout": "3\r\n",
     "stderr": "",
     "exitCode": 0,
-    "videoText": "Hello world\n",
-    "sourceCode": "#include <stdio.h>\n\nint main(void) {\n    printf(\"Hello world\\n\");\n    return 0;\n}",
+    "videoText": "3\n",
+    "sourceCode": "#include <stdio.h>\nint main(void) {\n    int count;\n    count = 3;\n    printf(\"%d\\n\", count);\n    return 0;\n}",
     "sourceInput": ""
   },
   "runCode": true,

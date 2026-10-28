@@ -23,3 +23,5 @@
 # Local logs and temporary files
 *.log
 *.tmp
+aaa/
+aaa/project.json
