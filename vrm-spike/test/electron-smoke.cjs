@@ -1570,6 +1570,12 @@ async function main() {
       Number.isFinite(modelRotation) && Math.abs(modelRotation + Math.PI / 6) < 1e-6,
       `VRM should face 30 degrees to the viewer's left at the initial timeline position (rotation: ${modelRotation})`,
     );
+    assert.equal(await window.locator('#model-flip-button').isEnabled(), true);
+    await window.locator('#model-flip-button').click();
+    assert.ok(
+      Math.abs((await window.evaluate(() => window.__cvideoTestGetModelRotation?.())) - 5 * Math.PI / 6) < 1e-6,
+      'the flip control should rotate the model by 180 degrees',
+    );
     const cameraFrontOffset = await window.evaluate(() => window.__cvideoTestGetCameraFrontOffset?.());
     assert.ok(cameraFrontOffset > 0, `camera should view the VRM from its front side (offset: ${cameraFrontOffset})`);
     const modelScreenX = await window.evaluate(() => window.__cvideoTestGetModelScreenX?.());
@@ -1579,8 +1585,8 @@ async function main() {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     assert.ok(
-      Math.abs((await window.evaluate(() => window.__cvideoTestGetModelRotation?.())) + Math.PI / 6) < 1e-6,
-      'VRM should remain turned 30 degrees to the viewer\'s left at later timestamps',
+      Math.abs((await window.evaluate(() => window.__cvideoTestGetModelRotation?.())) - 5 * Math.PI / 6) < 1e-6,
+      'the flipped orientation should remain after seeking to later timestamps',
     );
     if (withCResultFixture) {
       await window.locator('#scenario-confirm-button').click();

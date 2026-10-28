@@ -153,6 +153,7 @@ const blackboardImageReady = new Promise<HTMLImageElement>((resolve, reject) => 
 blackboardImage.src = new URL('./assets/bunbougu_kokuban.png', import.meta.url).href;
 const fileInput = document.querySelector<HTMLInputElement>('#model-file')!;
 const externalModelButton = document.querySelector<HTMLButtonElement>('#external-model-button')!;
+const modelFlipButton = document.querySelector<HTMLButtonElement>('#model-flip-button')!;
 let activeModelFile: File | undefined;
 let activeModelStorageMode: 'copy' | 'external' = 'copy';
 let pendingModelStorageMode: 'copy' | 'external' | undefined;
@@ -2401,7 +2402,7 @@ type MouthShape = { start: number; end: number; expression: string };
 type ExpressionEvent = { start: number; end: number; intensity: number };
 type ArmRestPoseEntry = { bone: THREE.Object3D; hand: THREE.Object3D; rotation: THREE.Euler; zOffset: number };
 const mouthExpressions = ['aa', 'ih', 'ou', 'ee', 'oh'];
-const modelFacingOffset = -Math.PI / 6;
+let modelFacingOffset = -Math.PI / 6;
 let activeVrm: VRM | undefined;
 let activeMixer: THREE.AnimationMixer | undefined;
 let activeMouthTimeline: MouthShape[] = [];
@@ -2412,6 +2413,13 @@ let baselineArmHandHeights: { left: number | null; right: number | null } = { le
 let modelLoadGeneration = 0;
 const previousCharacterActionOffset = new THREE.Euler();
 let previousCharacterHappyValue: number | null = null;
+
+modelFlipButton.addEventListener('click', () => {
+  if (!activeVrm) return;
+  modelFacingOffset = THREE.MathUtils.euclideanModulo(modelFacingOffset + 2 * Math.PI, 2 * Math.PI) - Math.PI;
+  renderAt(Number(timeline.value));
+  setResult('モデルの向きを180度反転しました。');
+});
 
 function clearActiveModel() {
   modelLoadGeneration += 1;
@@ -2433,6 +2441,7 @@ function clearActiveModel() {
   armRestPose = [];
   baselineArmHandHeights = { left: null, right: null };
   captureButton.disabled = true;
+  modelFlipButton.disabled = true;
   sequenceButton.disabled = true;
   benchmarkButton.disabled = true;
   videoExportButton.disabled = true;
@@ -2676,6 +2685,7 @@ fileInput.addEventListener('change', async () => {
     previousCharacterHappyValue = null;
     if (activeVrm) scene.remove(activeVrm.scene);
     activeVrm = loadedVrm;
+    modelFacingOffset = -Math.PI / 6;
     activeModelFile = file;
     markAllChapterVideosStale();
     scene.add(activeVrm.scene);
@@ -2726,6 +2736,7 @@ fileInput.addEventListener('change', async () => {
 
     emptyState.hidden = true;
     captureButton.disabled = false;
+    modelFlipButton.disabled = false;
     sequenceButton.disabled = false;
     benchmarkButton.disabled = false;
     videoExportButton.disabled = false;
