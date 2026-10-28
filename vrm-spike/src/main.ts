@@ -171,6 +171,7 @@ const benchmarkButton = document.querySelector<HTMLButtonElement>('#benchmark-bu
 const videoExportButton = document.querySelector<HTMLButtonElement>('#video-export-button')!;
 const videoCancelButton = document.querySelector<HTMLButtonElement>('#video-cancel-button')!;
 const videoExportStatus = document.querySelector<HTMLOutputElement>('#video-export-status')!;
+const voicevoxPanel = document.querySelector<HTMLElement>('#voicevox-panel')!;
 const voicevoxConnectButton = document.querySelector<HTMLButtonElement>('#voicevox-connect-button')!;
 const voicevoxStyle = document.querySelector<HTMLSelectElement>('#voicevox-style')!;
 const voicevoxText = document.querySelector<HTMLTextAreaElement>('#voicevox-text')!;
@@ -222,13 +223,33 @@ function isVoiceStyleApproved(styleId = voicevoxStyle.value) {
   return approvedVoiceStyleIds.has(styleId);
 }
 
+function getChapterAudioGenerationBlocker(narration: HTMLTextAreaElement | null) {
+  if (!window.voicevoxApi) return 'Electronアプリ内で利用できます。';
+  if (voicevoxStyle.disabled) return 'VOICEVOX Engineを起動し、「話者一覧を取得」してください。';
+  if (!voicevoxStyle.value || !Number.isSafeInteger(Number(voicevoxStyle.value))) return '話者・スタイルを選択してください。';
+  if (!isVoiceStyleApproved()) return '話者の利用条件を確認してください。';
+  if (!narration || narration.value.trim().length === 0) return '読み上げ本文を入力してください（1〜1,000文字）。';
+  if (narration.value.trim().length > 1000) return '読み上げ本文を1,000文字以内にしてください。';
+  return null;
+}
+
 function refreshVoiceGenerationControls() {
   const voiceAvailable = !voicevoxStyle.disabled && isVoiceStyleApproved();
   voicevoxGenerateButton.disabled = !voiceAvailable;
   for (const button of scenarioEditor.querySelectorAll<HTMLButtonElement>('.chapter-audio-generate')) {
     const narration = button.closest('fieldset')?.querySelector<HTMLTextAreaElement>('.chapter-narration');
-    button.disabled = !voiceAvailable || !narration || narration.value.trim().length > 1000;
+    const blocker = getChapterAudioGenerationBlocker(narration ?? null);
+    button.disabled = Boolean(blocker);
+    const requirements = button.closest('.chapter-audio-controls')?.querySelector<HTMLElement>('.chapter-audio-requirements');
+    if (requirements) requirements.textContent = blocker ?? '条件を満たしています。音声を生成／再生成できます。';
   }
+}
+
+function moveVoicevoxPanelToSelectedChapter() {
+  const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
+  const chapterAudioControls = selectedChapter?.querySelector<HTMLElement>('.chapter-audio-controls');
+  voicevoxPanel.hidden = !chapterAudioControls;
+  if (chapterAudioControls) chapterAudioControls.append(voicevoxPanel);
 }
 
 async function ensureVoiceStyleApproved(styleId: string, speakerName: string) {
@@ -1233,6 +1254,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     previewTarget.addEventListener('change', () => {
       stopPlayback();
       for (const audio of scenarioEditor.querySelectorAll<HTMLAudioElement>('.chapter-audio')) audio.pause();
+      moveVoicevoxPanelToSelectedChapter();
       refreshTimelineExtent();
       seekTo(Number(timeline.value));
       syncSubtitlePreview(Number(timeline.value));
@@ -1279,7 +1301,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     chapterAudioGenerate.type = 'button';
     chapterAudioGenerate.className = 'chapter-audio-generate';
     chapterAudioGenerate.textContent = 'この章の音声を生成／再生成';
-    chapterAudioGenerate.disabled = voicevoxStyle.disabled || !isVoiceStyleApproved() || narration.value.trim().length > 1000;
+    chapterAudioGenerate.disabled = Boolean(getChapterAudioGenerationBlocker(narration));
+    const chapterAudioRequirements = document.createElement('span');
+    chapterAudioRequirements.className = 'chapter-audio-requirements';
+    chapterAudioRequirements.textContent = getChapterAudioGenerationBlocker(narration)
+      ?? '条件を満たしています。音声を生成／再生成できます。';
     const chapterAudioStatus = document.createElement('span');
     chapterAudioStatus.className = 'chapter-audio-status';
     chapterAudioStatus.setAttribute('role', 'status');
@@ -1313,7 +1339,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       chapterAudio.load();
     };
     narration.addEventListener('input', () => {
-      chapterAudioGenerate.disabled = voicevoxStyle.disabled || !isVoiceStyleApproved() || narration.value.trim().length > 1000;
+      refreshVoiceGenerationControls();
       if (chapterAudioAsset || chapterAudioUrl) {
         chapterAudioAsset = null;
         delete chapterAudioControls.dataset.audioAsset;
@@ -1428,7 +1454,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         refreshVoiceGenerationControls();
       }
     });
-    chapterAudioControls.append(chapterAudioGenerate, chapterAudioStatus, chapterAudio);
+    chapterAudioControls.append(chapterAudioGenerate, chapterAudioStatus, chapterAudioRequirements, chapterAudio);
     fieldset.append(chapterAudioControls);
 
     const subtitleEditor = document.createElement('div');
@@ -2010,6 +2036,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       });
     }
   });
+  moveVoicevoxPanelToSelectedChapter();
   refreshTimelineExtent();
   syncCodeStagePreviews(Number(timeline.value));
   syncSubtitlePreview(Number(timeline.value));

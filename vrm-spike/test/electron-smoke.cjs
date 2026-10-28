@@ -296,6 +296,26 @@ async function main() {
       throw new Error(`Electron UI did not initialize: ${JSON.stringify({ pageState, consoleErrors })}; ${error.message}`);
     }
     assert.equal(initialScenarioTitle, 'C言語の変数入門');
+    const mainRegionOrder = await window.evaluate(() => {
+      const scenario = document.querySelector('.scenario-workspace').getBoundingClientRect();
+      const header = document.querySelector('.topbar').getBoundingClientRect();
+      const toolbar = document.querySelector('.toolbar').getBoundingClientRect();
+      const stage = document.querySelector('.stage').getBoundingClientRect();
+      const readout = document.querySelector('.readout').getBoundingClientRect();
+      return {
+        scenarioBottom: scenario.bottom,
+        headerTop: header.top,
+        headerBottom: header.bottom,
+        toolbarTop: toolbar.top,
+        toolbarBottom: toolbar.bottom,
+        stageTop: stage.top,
+        stageBottom: stage.bottom,
+        readoutTop: readout.top,
+      };
+    });
+    assert.ok(mainRegionOrder.scenarioBottom <= mainRegionOrder.headerTop, 'the scenario workspace should appear above the screenshot UI');
+    assert.ok(mainRegionOrder.headerBottom <= mainRegionOrder.toolbarTop, 'the header should remain above the toolbar');
+    assert.ok(mainRegionOrder.stageBottom <= mainRegionOrder.readoutTop, 'the VRM readout should remain below the stage');
     assert.equal(await window.locator('#scenario-creation-mode-automatic').isChecked(), true);
     assert.equal(await window.locator('#scenario-creation-mode-manual').isChecked(), false);
     const creationModeOrder = await window.evaluate(() => {
@@ -640,6 +660,13 @@ async function main() {
       await window.evaluate((draft) => window.__cvideoTestLoadScenarioDraft(draft), chapterFixture);
       const chapterTitles = () => window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value));
       assert.deepEqual(await chapterTitles(), ['変数を使う', '計算結果を表示する']);
+      assert.equal(await window.locator('.voicevox-panel').evaluate((panel) => {
+        const selected = document.querySelector('.chapter-preview-target:checked')?.closest('fieldset');
+        return panel.closest('.chapter-audio-controls') === selected?.querySelector('.chapter-audio-controls');
+      }), true, 'VOICEVOX controls should appear beside the selected chapter audio controls');
+      await window.locator('.chapter-preview-target').nth(1).check();
+      assert.equal(await window.locator('.scenario-editor fieldset').nth(1).locator('.chapter-audio-controls').locator('.voicevox-panel').count(), 1,
+        'VOICEVOX controls should follow the selected preview chapter');
       const previewControlLayout = await window.locator('.chapter-preview-target-label').first().evaluate((label) => {
         const radio = label.querySelector('input').getBoundingClientRect();
         const textNode = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);

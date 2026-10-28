@@ -26,7 +26,7 @@ button, input { font: inherit; }
 .shell {
   width: min(1440px, 100% - 56px);
   margin: 0 auto;
-  padding: 34px 0 24px;
+  padding: 0 0 24px;
 }
 
 .topbar, .toolbar, .readout {
@@ -35,7 +35,7 @@ button, input { font: inherit; }
   justify-content: space-between;
 }
 
-.topbar { padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+.topbar { padding-top: 22px; padding-bottom: 0; border-top: 1px solid var(--line); border-bottom: none; }
 .eyebrow { margin: 0 0 7px; color: var(--accent); font: 600 11px Consolas, monospace; letter-spacing: 0; }
 h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: 0; }
 .runtime-status { color: var(--muted); font: 500 12px Consolas, monospace; }
@@ -73,14 +73,15 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .playback-controls { display: flex; gap: 6px; }
 .playback-controls button { min-height: 36px; padding: 0 10px; font-size: 12px; }
 .voicevox-panel { display: grid; gap: 12px; margin: 0 0 18px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.voicevox-panel[hidden] { display: none; }
 .voicevox-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .voicevox-heading .eyebrow { margin-bottom: 4px; }
 .voicevox-heading h2 { margin: 0; font-size: 16px; font-weight: 600; }
-.voicevox-controls { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(220px, 1.4fr) auto minmax(200px, 1fr); align-items: end; gap: 10px; }
+.voicevox-controls { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(220px, 1.4fr) auto; align-items: end; gap: 10px; }
 .voicevox-controls label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
 .voicevox-controls select, .voicevox-controls textarea { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 2px; padding: 8px; color: var(--ink); background: rgba(255,255,255,.72); font: inherit; }
 .voicevox-controls textarea { resize: vertical; }
-.voicevox-controls audio { width: 100%; height: 36px; }
+.voicevox-controls audio { grid-column: 1 / -1; width: 100%; height: 36px; }
 .voicevox-controls audio[hidden] { display: none; }
 .voicevox-status { min-height: 18px; margin: 0; color: var(--muted); font-size: 12px; }
 .voicevox-status[data-state="ready"] { color: #236b47; }
@@ -116,7 +117,8 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 
 .stage {
   position: relative;
-  width: 100%;
+  width: 50%;
+  margin: 0;
   aspect-ratio: 16 / 9;
   overflow: hidden;
   background: var(--canvas);
@@ -150,7 +152,7 @@ canvas { display: block; width: 100%; height: 100%; }
 .readout p { margin: 0; }
 #result-readout { text-align: right; }
 
-.scenario-workspace { margin-top: 38px; padding: 24px 0 44px; border-top: 1px solid var(--line); }
+.scenario-workspace { margin-top: 0; padding: 12px 0 44px; border-top: 0; }
 .scenario-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
 .scenario-heading-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
 .scenario-save-status { color: var(--muted); font-size: 11px; }
@@ -215,7 +217,10 @@ canvas { display: block; width: 100%; height: 100%; }
 .chapter-audio-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
 .chapter-audio-controls audio { grid-column: 1 / -1; width: 100%; height: 36px; }
 .chapter-audio-controls audio[hidden] { display: none; }
+.chapter-audio-controls > .voicevox-panel { grid-column: 1 / -1; width: 100%; margin: 0; padding: 12px 0 0; border-top: 1px solid var(--line); border-bottom: 0; }
+.chapter-audio-controls > .voicevox-panel .voicevox-controls { grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr) auto; }
 .chapter-audio-status { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.chapter-audio-requirements { grid-column: 1 / -1; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .scenario-editor .scenario-checkbox { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 12px; }
 .scenario-editor .scenario-checkbox input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .character-action-editor { display: grid; justify-items: start; gap: 8px; }
@@ -257,15 +262,15 @@ canvas { display: block; width: 100%; height: 100%; }
 .execution-stderr { color: #ffd5c8; }
 
 @media (max-width: 700px) {
-  .shell { width: calc(100% - 28px); padding-top: 20px; }
+  .shell { width: calc(100% - 28px); }
   .toolbar { gap: 8px; }
   .time-control { order: 1; width: 100%; margin: 4px 0 0; }
   .timeline-track { flex: 1; width: auto; }
   .voicevox-controls { grid-template-columns: minmax(0, 1fr); }
+  .chapter-audio-controls > .voicevox-panel .voicevox-controls { grid-template-columns: minmax(0, 1fr); }
   .file-picker, button { min-height: 38px; padding: 0 10px; font-size: 12px; }
   .readout { flex-direction: column; gap: 6px; }
   #result-readout { text-align: left; }
-  .scenario-workspace { margin-top: 28px; padding-top: 20px; }
   .scenario-heading h2 { font-size: 18px; }
   .scenario-request-row, .scenario-editor { grid-template-columns: minmax(0, 1fr); }
   .scenario-request-row { gap: 10px; }
