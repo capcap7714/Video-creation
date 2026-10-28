@@ -975,7 +975,7 @@ function syncVideoComposition(seconds: number) {
     .at(-1);
   const visibleLineCount = stage?.visibleLines ?? 0;
   videoCodePreview.textContent = codeLines.slice(0, visibleLineCount).join('\n');
-  videoCodePreview.hidden = showingCredit || videoCodePreview.textContent.length === 0;
+  videoCodePreview.hidden = showingCredit;
 
   const executionResultText = selectedChapter
     ?.querySelector<HTMLTextAreaElement>('.video-execution-result')?.value.trim() ?? '';
@@ -1021,7 +1021,6 @@ function drawVideoTextPanel(text: string, x: number, y: number, width: number, h
 }
 
 async function drawVideoCodePanel(text: string, x: number, y: number, width: number, height: number) {
-  if (!text.trim()) return;
   const image = await blackboardImageReady;
   const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
   const imageWidth = image.naturalWidth * scale;
@@ -1076,7 +1075,7 @@ async function createVideoFrame(frameIndex: number, contentFrames: number, chapt
       videoFrameContext.stroke();
     }
     videoFrameContext.drawImage(canvas, 0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
-    await drawVideoCodePanel(videoCodePreview.textContent ?? '', 48, 54, 820, 600);
+    await drawVideoCodePanel(videoCodePreview.textContent ?? '', 48, 54, 1230, 900);
     drawVideoTextPanel(videoResultPreview.textContent ?? '', 48, 680, 820, 188, 20);
     drawVideoTextPanel(subtitlePreview.hidden ? '' : subtitlePreview.textContent ?? '', 96, 920, 1728, 110, 40, 'center');
   }
@@ -1091,7 +1090,9 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     __cvideoTestCreateVideoFrame?: typeof createVideoFrame;
     __cvideoTestGetModelRotation?: () => number;
     __cvideoTestGetModelScreenX?: () => number;
+    __cvideoTestGetModelScreenBoundsX?: () => { left: number; right: number };
     __cvideoTestGetCameraFrontOffset?: () => number;
+    __cvideoTestGetHeadAndKneeScreenY?: () => { head: number | null; leftKnee: number | null; rightKnee: number | null };
     __cvideoTestGetArmHandHeights?: () => {
       baseline: { left: number | null; right: number | null };
       current: { left: number | null; right: number | null };
@@ -1108,10 +1109,37 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     if (!activeVrm) return Number.NaN;
     return new THREE.Box3().setFromObject(activeVrm.scene).getCenter(new THREE.Vector3()).project(camera).x;
   };
+  testWindow.__cvideoTestGetModelScreenBoundsX = () => {
+    if (!activeVrm) return { left: Number.NaN, right: Number.NaN };
+    const bounds = new THREE.Box3().setFromObject(activeVrm.scene);
+    const projectedX = [
+      new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
+      new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+      new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
+      new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+      new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
+      new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+      new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+      new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+    ].map((corner) => corner.project(camera).x);
+    return { left: Math.min(...projectedX), right: Math.max(...projectedX) };
+  };
   testWindow.__cvideoTestGetCameraFrontOffset = () => {
     if (!activeVrm) return Number.NaN;
     const modelCenter = new THREE.Box3().setFromObject(activeVrm.scene).getCenter(new THREE.Vector3());
     return camera.position.z - modelCenter.z;
+  };
+  testWindow.__cvideoTestGetHeadAndKneeScreenY = () => {
+    if (!activeVrm) return { head: null, leftKnee: null, rightKnee: null };
+    const getBoneScreenY = (boneName: 'head' | 'leftLowerLeg' | 'rightLowerLeg') => {
+      const bone = activeVrm?.humanoid.getNormalizedBoneNode(boneName);
+      return bone ? bone.getWorldPosition(new THREE.Vector3()).project(camera).y : null;
+    };
+    return {
+      head: getBoneScreenY('head'),
+      leftKnee: getBoneScreenY('leftLowerLeg'),
+      rightKnee: getBoneScreenY('rightLowerLeg'),
+    };
   };
   testWindow.__cvideoTestGetArmHandHeights = () => {
     activeVrm?.scene.updateMatrixWorld(true);
@@ -2723,9 +2751,12 @@ fileInput.addEventListener('change', async () => {
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
     const height = Math.max(size.y, 0.5);
-    const rightCompositionOffset = height * 0.28;
-    controls.target.set(center.x - rightCompositionOffset, center.y, center.z);
-    camera.position.set(center.x - rightCompositionOffset, center.y + height * 0.08, center.z + height * 2.65);
+    const rightCompositionOffset = height * 1.05;
+    const framingTargetY = center.y + height * 0.14;
+    const characterFramingScale = 0.437;
+    const cameraDistance = height * 1.55 / characterFramingScale;
+    controls.target.set(center.x - rightCompositionOffset, framingTargetY, center.z);
+    camera.position.set(center.x - rightCompositionOffset, framingTargetY + height * 0.08, center.z + cameraDistance);
     camera.near = Math.max(height / 1000, 0.01);
     camera.far = height * 20;
     camera.updateProjectionMatrix();

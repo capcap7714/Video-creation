@@ -296,6 +296,14 @@ async function main() {
       throw new Error(`Electron UI did not initialize: ${JSON.stringify({ pageState, consoleErrors })}; ${error.message}`);
     }
     assert.equal(initialScenarioTitle, 'C言語の変数入門');
+    assert.equal(await window.locator('#scenario-creation-mode-automatic').isChecked(), true);
+    assert.equal(await window.locator('#scenario-creation-mode-manual').isChecked(), false);
+    const creationModeOrder = await window.evaluate(() => {
+      const automatic = document.querySelector('#scenario-creation-mode-automatic').getBoundingClientRect();
+      const manual = document.querySelector('#scenario-creation-mode-manual').getBoundingClientRect();
+      return { automaticLeft: automatic.left, manualLeft: manual.left };
+    });
+    assert.ok(creationModeOrder.automaticLeft < creationModeOrder.manualLeft, 'automatic creation should appear to the left of manual setup');
     console.log('Scenario preload and input-validation IPC passed');
 
     if (withMaterialEligibilityFixture) {
@@ -632,6 +640,26 @@ async function main() {
       await window.evaluate((draft) => window.__cvideoTestLoadScenarioDraft(draft), chapterFixture);
       const chapterTitles = () => window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value));
       assert.deepEqual(await chapterTitles(), ['変数を使う', '計算結果を表示する']);
+      const previewControlLayout = await window.locator('.chapter-preview-target-label').first().evaluate((label) => {
+        const radio = label.querySelector('input').getBoundingClientRect();
+        const textNode = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
+        const range = document.createRange();
+        range.selectNode(textNode);
+        const text = range.getBoundingClientRect();
+        return { radioRight: radio.right, radioTop: radio.top, textLeft: text.left, textTop: text.top };
+      });
+      assert.ok(previewControlLayout.textLeft >= previewControlLayout.radioRight, 'chapter preview text should appear to the right of its radio button');
+      assert.ok(Math.abs(previewControlLayout.textTop - previewControlLayout.radioTop) < 8, 'chapter preview text should align with its radio button');
+      const actionSection = window.locator('.character-action-section').first();
+      const actionRows = actionSection.locator('.character-action-row');
+      const addActionButton = actionSection.getByRole('button', { name: '動作を追加' });
+      while (await actionRows.count() < 4) await addActionButton.click();
+      const actionButtonGap = await actionSection.evaluate((section) => {
+        const lastRow = section.querySelector('.character-action-row:last-child').getBoundingClientRect();
+        const addButton = section.querySelector('.character-action-editor > button').getBoundingClientRect();
+        return addButton.top - lastRow.bottom;
+      });
+      assert.ok(actionButtonGap >= 8, `add-action button should not touch the last time input row (gap: ${actionButtonGap}px)`);
       await window.locator('[data-chapter-action="move-up"]').nth(1).click();
       assert.deepEqual(await chapterTitles(), ['計算結果を表示する', '変数を使う']);
       assert.equal(await window.locator('#scenario-review-state').innerText(), '未確認の変更');
@@ -1098,6 +1126,19 @@ async function main() {
       assert.equal(await window.locator('#subtitle-preview').innerText(), withVoicevoxFixture || withLiveVoicevox
         ? '変数は値を保存する名前付きの場所です。'
         : '変数を宣言します。');
+      const compositionBounds = await window.evaluate(() => {
+        const stage = document.querySelector('.stage').getBoundingClientRect();
+        const board = document.querySelector('#video-code-preview').getBoundingClientRect();
+        const subtitle = document.querySelector('#subtitle-preview').getBoundingClientRect();
+        return {
+          boardBottom: (board.bottom - stage.top) / stage.height,
+          subtitleTop: (subtitle.top - stage.top) / stage.height,
+        };
+      });
+      assert.ok(
+        compositionBounds.subtitleTop >= compositionBounds.boardBottom,
+        `subtitle background should stay below the blackboard (board bottom: ${compositionBounds.boardBottom}, subtitle top: ${compositionBounds.subtitleTop})`,
+      );
       await window.locator('#timeline').evaluate((input) => {
         input.value = '0';
         input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1580,6 +1621,41 @@ async function main() {
     assert.ok(cameraFrontOffset > 0, `camera should view the VRM from its front side (offset: ${cameraFrontOffset})`);
     const modelScreenX = await window.evaluate(() => window.__cvideoTestGetModelScreenX?.());
     assert.ok(modelScreenX > 0.1, `VRM should be framed to the right of center (screen x: ${modelScreenX})`);
+    const modelScreenBoundsX = await window.evaluate(() => window.__cvideoTestGetModelScreenBoundsX?.());
+    const boardLayout = await window.locator('#video-code-preview').evaluate((panel) => {
+      const stage = panel.closest('.stage');
+      const stageBounds = stage.getBoundingClientRect();
+      const panelBounds = panel.getBoundingClientRect();
+      return {
+        right: (panelBounds.right - stageBounds.left) / stageBounds.width,
+        width: panelBounds.width / stageBounds.width,
+        height: panelBounds.height / stageBounds.height,
+        fontSize: getComputedStyle(panel).fontSize,
+      };
+    });
+    const modelLeftOnScreen = ((modelScreenBoundsX?.left ?? -1) + 1) / 2;
+    const modelRightOnScreen = ((modelScreenBoundsX?.right ?? 1) + 1) / 2;
+    assert.ok(boardLayout.width > 0.63 && boardLayout.height > 0.82, 'the blackboard should be about 1.5 times its former size');
+    assert.equal(boardLayout.fontSize, '22px', 'the code font size should remain unchanged');
+    assert.ok(
+      modelRightOnScreen < 1,
+      `the VRM should remain inside the right edge of the frame (left: ${modelLeftOnScreen}, right: ${modelRightOnScreen})`,
+    );
+    assert.ok(
+      modelLeftOnScreen > boardLayout.right,
+      `the VRM should not overlap the enlarged blackboard (VRM left: ${modelLeftOnScreen}, board right: ${boardLayout.right})`,
+    );
+    const headAndKneeScreenY = await window.evaluate(() => window.__cvideoTestGetHeadAndKneeScreenY?.());
+    assert.ok(
+      headAndKneeScreenY?.head !== null && headAndKneeScreenY.head < 1,
+      `the VRM head should remain inside the top of the frame (screen y: ${headAndKneeScreenY?.head})`,
+    );
+    for (const [knee, screenY] of Object.entries({ left: headAndKneeScreenY?.leftKnee, right: headAndKneeScreenY?.rightKnee })) {
+      assert.ok(
+        screenY !== null && screenY !== undefined && screenY > -1,
+        `the ${knee} knee should remain inside the bottom of the frame (screen y: ${screenY})`,
+      );
+    }
     await window.locator('#timeline').evaluate((input) => {
       input.value = '10';
       input.dispatchEvent(new Event('input', { bubbles: true }));
