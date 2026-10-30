@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { listSpeakers, synthesizeSpeech } = require('../electron/voicevox-service.cjs');
 
 function makePcmWav() {
-  const pcm = Buffer.alloc(2400 * 2);
+  const pcm = Buffer.alloc(24000 * 2);
   const header = Buffer.alloc(44);
   header.write('RIFF', 0);
   header.writeUInt32LE(36 + pcm.length, 4);
@@ -33,12 +33,16 @@ assert.deepEqual(speakers, [{ name: '四国めたん', styles: [{ name: 'ノー�
 
 const requests = [];
 let lastAudioQuery;
-const result = await synthesizeSpeech({ text: '試験音声です。もう一文です。', styleId: 2 }, async (url, options) => {
+const result = await synthesizeSpeech({
+  openingText: '冒頭の挨拶です。',
+  text: '試験音声です。もう一文です。',
+  styleId: 2,
+}, async (url, options) => {
   const requestUrl = new URL(url);
   requests.push({ requestUrl, options });
   if (requestUrl.pathname === '/audio_query') {
     const sentence = requestUrl.searchParams.get('text');
-    assert.ok(['試験音声です。', 'もう一文です。'].includes(sentence));
+    assert.ok(['冒頭の挨拶です。', '試験音声です。', 'もう一文です。'].includes(sentence));
     assert.equal(requestUrl.searchParams.get('speaker'), '2');
     assert.equal(options.method, 'POST');
     lastAudioQuery = {
@@ -59,15 +63,20 @@ const result = await synthesizeSpeech({ text: '試験音声です。もう一文
   return new Response(makePcmWav(), { headers: { 'content-type': 'audio/wav' } });
 });
 assert.equal(Buffer.from(result.audio).toString('ascii', 0, 4), 'RIFF');
-assert.equal(Buffer.from(result.audio).readUInt32LE(40), 2400 * 2 * 2);
-assert.equal(requests.length, 4);
+assert.equal(Buffer.from(result.audio).readUInt32LE(40), 24000 * 2 * 3);
+assert.equal(requests.length, 6);
 assert.deepEqual(result.subtitles, [
-  { startSeconds: 0.01, endSeconds: 0.09, text: '試験音声です。' },
-  { startSeconds: 0.11, endSeconds: 0.19, text: 'もう一文です。' },
+  { startSeconds: 1.01, endSeconds: 1.81, text: '試験音声です。' },
+  { startSeconds: 2.01, endSeconds: 2.99, text: 'もう一文です。' },
 ]);
+assert.equal(result.openingDurationSeconds, 1.01);
+assert.ok(result.subtitles.every((subtitle) => !subtitle.text.includes('冒頭の挨拶')));
+assert.ok(Math.round((result.subtitles[1].startSeconds - result.subtitles[0].endSeconds) * 1000) >= 200);
+assert.ok(result.subtitles.every((subtitle) => subtitle.endSeconds - subtitle.startSeconds >= 0.8));
 assert.deepEqual(result.mouthTimeline, [
-  { start: 0.02, end: 0.05, expression: 'aa' },
-  { start: 0.12, end: 0.15, expression: 'ih' },
+  { start: 0.02, end: 0.05, expression: 'ih' },
+  { start: 1.02, end: 1.05, expression: 'aa' },
+  { start: 2.02, end: 2.05, expression: 'ih' },
 ]);
 
 await assert.rejects(

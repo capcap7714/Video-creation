@@ -3,6 +3,8 @@ const MAX_MOUTH_CUES = 10_000;
 const VOWEL_EXPRESSIONS = { a: 'aa', i: 'ih', u: 'ou', e: 'ee', o: 'oh' };
 const MAX_WAV_BYTES = 50 * 1024 * 1024;
 const MAX_SENTENCES = 100;
+const MIN_SUBTITLE_GAP_SECONDS = 0.2;
+const MIN_SUBTITLE_DURATION_SECONDS = 0.8;
 
 async function requestJson(url, options, fetchImpl) {
   let response;
@@ -40,6 +42,58 @@ function splitSentences(text) {
   return fragments.flatMap((fragment) => fragment.split(/\r?\n/u))
     .map((sentence) => sentence.trim())
     .filter(Boolean);
+}
+
+function mergeSubtitleCues(first, second) {
+  first.endSeconds = second.endSeconds;
+  first.text = `${first.text}\n${second.text}`;
+}
+
+function normalizeSubtitleTiming(subtitles, audioDurationSeconds) {
+  const cues = subtitles.map((subtitle) => ({ ...subtitle }));
+  const minimumDuration = Math.min(MIN_SUBTITLE_DURATION_SECONDS, audioDurationSeconds);
+
+  for (let index = 0; index < cues.length;) {
+    if (cues[index].endSeconds - cues[index].startSeconds >= minimumDuration) {
+      index += 1;
+    } else if (index + 1 < cues.length) {
+      mergeSubtitleCues(cues[index], cues[index + 1]);
+      cues.splice(index + 1, 1);
+    } else if (index > 0) {
+      mergeSubtitleCues(cues[index - 1], cues[index]);
+      cues.splice(index, 1);
+      index -= 1;
+    } else {
+      cues[index].endSeconds = audioDurationSeconds;
+      index += 1;
+    }
+  }
+
+  for (let index = 0; index + 1 < cues.length;) {
+    const cue = cues[index];
+    const nextCue = cues[index + 1];
+    if (nextCue.startSeconds - cue.endSeconds >= MIN_SUBTITLE_GAP_SECONDS - 1e-9) {
+      index += 1;
+      continue;
+    }
+
+    const adjustedEnd = nextCue.startSeconds - MIN_SUBTITLE_GAP_SECONDS;
+    if (adjustedEnd - cue.startSeconds >= minimumDuration - 1e-9) {
+      cue.endSeconds = adjustedEnd;
+      index += 1;
+      continue;
+    }
+
+    mergeSubtitleCues(cue, nextCue);
+    cues.splice(index + 1, 1);
+    if (index > 0) index -= 1;
+  }
+
+  return cues.map((cue) => ({
+    ...cue,
+    startSeconds: Math.round(Math.max(0, cue.startSeconds) * 1000) / 1000,
+    endSeconds: Math.round(Math.min(audioDurationSeconds, cue.endSeconds) * 1000) / 1000,
+  }));
 }
 
 function parsePcmWav(audio) {
@@ -108,8 +162,10 @@ function makePcmWav(pcm, { channels, sampleRate, bitsPerSample }) {
   return Buffer.concat([header, pcm]);
 }
 
-async function synthesizeSpeech({ text, styleId }, fetchImpl = fetch) {
-  const sentences = splitSentences(text);
+async function synthesizeSpeech({ text, openingText = '', styleId }, fetchImpl = fetch) {
+  if (typeof openingText !== 'string') throw new Error('冒頭の挨拶文を確認してください。');
+  const openingSentences = splitSentences(openingText);
+  const sentences = [...openingSentences, ...splitSentences(text)];
   if (sentences.length === 0 || sentences.length > MAX_SENTENCES) {
     throw new Error('読み上げ文を100文以内にしてください。');
   }
@@ -119,8 +175,9 @@ async function synthesizeSpeech({ text, styleId }, fetchImpl = fetch) {
   const mouthTimeline = [];
   let wavFormat;
   let totalDuration = 0;
+  let openingDurationSeconds = 0;
   let totalBytes = 44;
-  for (const sentence of sentences) {
+  for (const [index, sentence] of sentences.entries()) {
     const queryUrl = new URL(`${API_ORIGIN}/audio_query`);
     queryUrl.searchParams.set('text', sentence);
     queryUrl.searchParams.set('speaker', String(styleId));
@@ -172,11 +229,19 @@ async function synthesizeSpeech({ text, styleId }, fetchImpl = fetch) {
     const startSeconds = totalDuration + prePhonemeLength;
     const endSeconds = totalDuration + durationSeconds - postPhonemeLength;
     if (endSeconds <= startSeconds) throw new Error('VOICEVOX Engineの字幕タイミングを確認できません。');
-    subtitles.push({
-      startSeconds: Math.round(startSeconds * 1000) / 1000,
-      endSeconds: Math.round(endSeconds * 1000) / 1000,
-      text: sentence,
-    });
+    const isOpeningSentence = index < openingSentences.length;
+    if (isOpeningSentence) {
+      openingDurationSeconds = totalDuration + durationSeconds;
+    } else {
+      if (index === openingSentences.length && openingSentences.length > 0) {
+        openingDurationSeconds = totalDuration + prePhonemeLength;
+      }
+      subtitles.push({
+        startSeconds: Math.round(startSeconds * 1000) / 1000,
+        endSeconds: Math.round(endSeconds * 1000) / 1000,
+        text: sentence,
+      });
+    }
     let phonemeCursor = totalDuration + prePhonemeLength;
     for (const phrase of Array.isArray(audioQuery.accent_phrases) ? audioQuery.accent_phrases : []) {
       for (const mora of Array.isArray(phrase?.moras) ? phrase.moras : []) {
@@ -209,7 +274,12 @@ async function synthesizeSpeech({ text, styleId }, fetchImpl = fetch) {
     totalDuration += durationSeconds;
   }
 
-  return { audio: new Uint8Array(makePcmWav(Buffer.concat(segments), wavFormat)), subtitles, mouthTimeline };
+  return {
+    audio: new Uint8Array(makePcmWav(Buffer.concat(segments), wavFormat)),
+    subtitles: normalizeSubtitleTiming(subtitles, totalDuration),
+    mouthTimeline,
+    openingDurationSeconds,
+  };
 }
 
-module.exports = { listSpeakers, synthesizeSpeech };
+module.exports = { listSpeakers, normalizeSubtitleTiming, synthesizeSpeech };

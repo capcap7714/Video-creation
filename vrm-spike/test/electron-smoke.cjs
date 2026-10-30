@@ -191,14 +191,14 @@ async function main() {
   let aiProviderToRestore;
 
   try {
-    if (withScenarioReviewFixture || withNewProjectFlowFixture || withProjectFixture || withProjectOpenFixture || withProjectModelAssetFixture || withProjectRecoveryFixture || withProjectRecoveryFailureFixture || withCorruptProjectFixture || withAutosaveFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
+    if (withScenarioGeneration || withScenarioReviewFixture || withNewProjectFlowFixture || withProjectFixture || withProjectOpenFixture || withProjectModelAssetFixture || withProjectRecoveryFixture || withProjectRecoveryFailureFixture || withCorruptProjectFixture || withAutosaveFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
       projectDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'c-video-project-ui-'));
       if (withProjectModelAssetFixture) {
         externalModelDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'c-video-external-model-ui-'));
         externalModelPath = path.join(externalModelDirectory, 'C1.vrm');
         await fs.copyFile(path.resolve(__dirname, '../../C1.vrm'), externalModelPath);
       }
-      if (!withNewProjectFlowFixture) await projectStore.saveScenarioProject(projectDirectory, fixtureRequest, fixtureDraft);
+      if (!withNewProjectFlowFixture && !withScenarioGeneration) await projectStore.saveScenarioProject(projectDirectory, fixtureRequest, fixtureDraft);
       if (withAudioReplacementFixture) {
         const audioReplacementDraft = structuredClone(fixtureDraft);
         audioReplacementDraft.chapters[0].runCode = false;
@@ -462,10 +462,17 @@ async function main() {
       await window.locator('#scenario-chapter-count').fill(String(request.chapterCount));
       await window.locator('#scenario-target-minutes').fill(String(request.targetMinutes));
       await window.locator('#scenario-creation-mode-automatic').check();
+      await app.evaluate(({ dialog }, selectedPath) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
+      }, projectDirectory);
       await window.locator('#scenario-generate-button').click();
       await window.getByText('確認待ち', { exact: true }).waitFor({ timeout: 30_000 });
       assert.equal(await window.locator('#scenario-editor fieldset').count(), 1);
       assert.equal(await window.locator('#scenario-save-button').isDisabled(), true);
+      assert.equal(await window.locator('#chapter-workflow').isVisible(), true);
+      assert.match(await window.locator('#chapter-workflow-status').innerText(), /章の内容を確認してください/);
+      assert.match(await window.locator('.narration-timing-status').first().innerText(), /本文 \d+文字・推定 \d+\.\d+秒/u);
+      assert.match(await window.locator('.narration-timing-status').first().innerText(), /目標 3分 \/ 本文目安 720〜1080文字/u);
       await window.locator('#chapter-add-button').click();
       assert.deepEqual(await window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value)), [
         '未確認の章', '新しい章',
@@ -488,7 +495,8 @@ async function main() {
       ]);
       await window.locator('#scenario-confirm-button').click();
       assert.equal(await window.locator('#scenario-save-button').isEnabled(), true);
-      assert.match(await window.locator('#scenario-message').innerText(), /プロジェクト保存はまだ行われていません/u);
+      assert.match(await window.locator('#chapter-workflow-status').innerText(), /VOICEVOXで章音声を生成してください/);
+      assert.match(await window.locator('#scenario-message').innerText(), /自動保存/u);
       await app.evaluate(({ dialog }, selectedPath) => {
         dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
       }, projectDirectory);
@@ -746,51 +754,29 @@ async function main() {
       assert.equal(await window.locator('.execution-time').inputValue(), '6.5');
 
       await window.locator('.timeline-marker[data-kind="code-stage"]').nth(1).click();
-      assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - 4) < 0.02);
-      assert.equal(await window.locator('.staged-code-preview').innerText(), fixtureDraft.chapters[0].codeExample);
+      assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - 7) < 0.02);
+      assert.equal(await window.locator('.staged-code-preview').innerText(), '#include <stdio.h>');
       assert.equal(await window.locator('#video-result-preview').isHidden(), true);
 
       await window.locator('.timeline-marker[data-kind="execution"]').click();
-      assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - 6.5) < 0.02);
+      assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - 9.5) < 0.02);
       assert.equal(await window.locator('#video-result-preview').innerText(), '80');
 
       await window.locator('.timeline-marker[data-kind="character-action"]').nth(1).click();
-      assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - 5) < 0.02);
+      assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - 8) < 0.02);
       assert.equal(await window.evaluate(() => window.__cvideoTestGetCharacterActionAt?.(5)?.action), 'attention');
 
       await window.locator('.timeline-marker[data-kind="subtitle"]').click();
-      assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - 7) < 0.02);
+      assert.ok(Math.abs(Number(await window.locator('#timeline').inputValue()) - 10) < 0.02);
       assert.equal(await window.locator('#subtitle-preview').innerText(), '字幕マーカーを選びました。');
       console.log('Timeline code-stage, execution, character-action, and subtitle markers seek and update the preview');
       return;
     }
 
-    if (withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
-      await window.locator('#voicevox-connect-button').click();
-      if (withLiveVoicevox) {
-        await window.getByText(/^接続しました。\d+種類のスタイルを利用できます。$/).waitFor({ timeout: 30000 });
-        const firstStyleId = await window.locator('#voicevox-style option').first().getAttribute('value');
-        assert.ok(firstStyleId, 'live VOICEVOX Engine should expose at least one style');
-        await window.locator('#voicevox-style').selectOption(firstStyleId);
-      } else {
-        await window.getByText('接続しました。2種類のスタイルを利用できます。', { exact: true }).waitFor();
-        assert.equal(await window.locator('#voicevox-style option').count(), 2);
-        await window.locator('#voicevox-style').selectOption('2');
-      }
-      await window.locator('#voicevox-generate-button').click();
-      await window.getByText('試聴音声を生成しました。再生ボタンで確認できます。', { exact: true }).waitFor();
-      assert.equal(await window.locator('#voicevox-audio').isVisible(), true);
-      assert.match(await window.locator('#voicevox-audio').getAttribute('src'), /^blob:/);
-      await window.waitForFunction(() => {
-        const audio = document.querySelector('#voicevox-audio');
-        return audio && audio.readyState >= 1 && Number.isFinite(audio.duration) && audio.duration > 0;
-      }, null, { timeout: 30000 });
-      console.log(withLiveVoicevox
-        ? 'Live VOICEVOX speaker selection and WAV preview generation passed'
-        : 'VOICEVOX speaker selection and WAV preview generation passed');
-    }
-
     if (withScenarioGeneration) {
+      await app.evaluate(({ dialog }, selectedPath) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
+      }, projectDirectory);
       await window.locator('#scenario-generate-button').click();
       await window.getByText('確認待ち', { exact: true }).waitFor({ timeout: 180000 });
       assert.equal(await window.locator('#scenario-editor fieldset').count(), 2);
@@ -801,7 +787,7 @@ async function main() {
       assert.equal(await window.locator('#scenario-review-state').innerText(), '未確認の変更');
       await window.locator('#scenario-confirm-button').click();
       assert.equal(await window.locator('#scenario-review-state').innerText(), '確認済み');
-      assert.match(await window.locator('#scenario-message').innerText(), /プロジェクト保存はまだ行われていません/);
+      assert.match(await window.locator('#scenario-message').innerText(), /自動保存/u);
 
       await window.screenshot({
         path: path.resolve(__dirname, '../test-results/scenario-review.png'),
@@ -979,7 +965,40 @@ async function main() {
         await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30000 });
       }
       if (withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
+        if (await window.locator('#scenario-review-state').innerText() !== '確認済み') {
+          await window.locator('#scenario-confirm-button').click();
+        }
+        await window.locator('#voicevox-connect-button').click();
+        if (withLiveVoicevox) {
+          await window.getByText(/^接続しました。\d+種類のスタイルを利用できます。$/).waitFor({ timeout: 30_000 });
+          const firstStyleId = await window.locator('#voicevox-style option').first().getAttribute('value');
+          assert.ok(firstStyleId, 'live VOICEVOX Engine should expose at least one style');
+          await window.locator('#voicevox-style').selectOption(firstStyleId);
+        } else {
+          await window.getByText('接続しました。2種類のスタイルを利用できます。', { exact: true }).waitFor();
+          assert.equal(await window.locator('#voicevox-style option').count(), 2);
+          await window.locator('#voicevox-style').selectOption('2');
+        }
+        await window.waitForFunction(() => !document.querySelector('.chapter-audio-generate')?.disabled, null, { timeout: 30_000 });
+        if (withVoicevoxFixture || withLiveVoicevox) {
+          await window.locator('#voicevox-generate-button').click();
+          await window.getByText('試聴音声を生成しました。再生ボタンで確認できます。', { exact: true }).waitFor({ timeout: 30_000 });
+          assert.equal(await window.locator('#voicevox-audio').isVisible(), true);
+          assert.match(await window.locator('#voicevox-audio').getAttribute('src'), /^blob:/);
+          await window.waitForFunction(() => {
+            const audio = document.querySelector('#voicevox-audio');
+            return audio && audio.readyState >= 1 && Number.isFinite(audio.duration) && audio.duration > 0;
+          }, null, { timeout: 30_000 });
+          console.log(withLiveVoicevox
+            ? 'Live VOICEVOX speaker selection and WAV preview generation passed'
+            : 'VOICEVOX speaker selection and WAV preview generation passed');
+        }
         await window.evaluate(() => { window.confirm = () => true; });
+        assert.equal(
+          await window.locator('.chapter-audio-generate').isEnabled(),
+          true,
+          `chapter audio should be ready after review and voice selection: ${await window.locator('.chapter-audio-requirements').innerText()}; ${await window.locator('#voicevox-license-status').innerText()}`,
+        );
         await window.locator('.chapter-audio-generate').click();
         try {
           await window.getByText(/^音声を保存しました（\d+\.\d+秒）。/)
@@ -995,6 +1014,15 @@ async function main() {
         assert.equal(await window.locator('.subtitle-text').first().inputValue(), '変数は値を保存する名前付きの場所です。');
         await window.waitForFunction(() => Number.isFinite(document.querySelector('.chapter-audio')?.duration)
           && document.querySelector('.chapter-audio').duration > 0, null, { timeout: 30000 });
+        if (withLiveVoicevox) {
+          await window.waitForFunction(
+            () => document.querySelector('.narration-timing-status')?.dataset.state === 'warning',
+            null,
+            { timeout: 30_000 },
+          );
+          assert.match(await window.locator('.narration-timing-status').first().innerText(), /音声実尺 \d+\.\d+秒/u);
+          assert.match(await window.locator('.narration-timing-status').first().innerText(), /目標との差が±20%を超えています/u);
+        }
         if (withVoicevoxFixture) {
           const chapterAudioAsset = JSON.parse(await fs.readFile(path.join(projectDirectory, 'chapters', '01', 'scenario.json'), 'utf8')).audioAsset;
           assert.deepEqual(chapterAudioAsset.mouthTimeline, [
@@ -1026,7 +1054,7 @@ async function main() {
           assert.ok(preservedSubtitles[0].endSeconds < originalEndSeconds, 'manual subtitle end adjustment should be applied');
           const updatedNarration = `${fixtureDraft.chapters[0].narration} 再生成確認。`;
           await window.locator('.chapter-narration').fill(updatedNarration);
-          await window.getByText('字幕タイミング: 要確認（読み上げ本文が変更されています）', { exact: true }).waitFor();
+          await window.getByText('字幕タイミング: 要確認（章タイトルまたは読み上げ本文が変更されています）', { exact: true }).waitFor();
           assert.match(await window.locator('.chapter-material-status').first().innerText(), /音声: 要更新/);
           assert.match(await window.locator('.chapter-material-status').first().innerText(), /動画: 要更新/);
           await window.locator('#scenario-confirm-button').click();
@@ -1074,24 +1102,35 @@ async function main() {
           });
           await window.locator('.chapter-audio-generate').click();
           await window.getByText(/^音声を保存しました（\d+\.\d+秒）。/).waitFor({ timeout: 120000 });
+          await window.getByText('自動保存済み', { exact: true }).waitFor({ timeout: 30_000 });
           const updatedAudioAsset = JSON.parse(await fs.readFile(chapterPath, 'utf8')).audioAsset;
           assert.notEqual(updatedAudioAsset.narrationHash, previousAudioAsset.narrationHash);
-          assert.deepEqual(await window.locator('.subtitle-row').evaluateAll((rows) => rows.map((row) => ({
+          const retimedSubtitles = await window.locator('.subtitle-row').evaluateAll((rows) => rows.map((row) => ({
             startSeconds: Number(row.querySelector('.subtitle-start').value),
             endSeconds: Number(row.querySelector('.subtitle-end').value),
             text: row.querySelector('.subtitle-text').value,
-          }))), preservedSubtitles);
-          assert.deepEqual(JSON.parse(await fs.readFile(chapterPath, 'utf8')).subtitles, preservedSubtitles);
-          await window.getByText('字幕タイミング: 要確認（読み上げ本文が変更されています）', { exact: true }).waitFor();
+          })));
+          assert.deepEqual(retimedSubtitles.map((subtitle) => subtitle.text), preservedSubtitles.map((subtitle) => subtitle.text));
+          assert.notDeepEqual(
+            retimedSubtitles.map((subtitle) => [subtitle.startSeconds, subtitle.endSeconds]),
+            preservedSubtitles.map((subtitle) => [subtitle.startSeconds, subtitle.endSeconds]),
+          );
+          assert.ok(retimedSubtitles.every((subtitle) => subtitle.endSeconds - subtitle.startSeconds >= 0.8));
+          assert.ok(retimedSubtitles.every((subtitle) => subtitle.endSeconds <= updatedAudioAsset.durationSeconds));
+          for (let index = 1; index < retimedSubtitles.length; index += 1) {
+            assert.ok(Math.round((retimedSubtitles[index].startSeconds - retimedSubtitles[index - 1].endSeconds) * 1000) >= 200);
+          }
+          assert.deepEqual(JSON.parse(await fs.readFile(chapterPath, 'utf8')).subtitles, retimedSubtitles);
+          await window.getByText('字幕タイミング: 本文と一致', { exact: true }).waitFor();
           assert.deepEqual(await window.evaluate(() => window.__audioReplacementPrompts), [
             '保存済み音声を新しい音声で置き換えますか？',
-            '音声から作成した字幕で現在の字幕を置き換えますか？',
+            '音声から作成した字幕へ置き換えますか？ キャンセルすると手動字幕の本文を保持し、新しい音声に合わせて時刻を再生成します。',
           ]);
           assert.match(await window.locator('.chapter-material-status').first().innerText(), /音声: 最新/);
           assert.equal(
             await window.locator('.chapter-material-status').first().getAttribute('data-state'),
             'needs-attention',
-            'stale subtitle timing should keep the chapter material summary in a needs-attention state',
+            'a completed audio and subtitle refresh should keep the chapter material summary current',
           );
           console.log('Declined narration replacement preserved the saved WAV; approved audio regeneration retained manually edited subtitles');
           return;
@@ -1099,8 +1138,12 @@ async function main() {
         if (!withLiveVoicevox && !withMissingSubtitleFixture) {
           await window.locator('.chapter-narration').fill('本文を変更したため、音声を再生成して確認します。');
           await window.getByText('読み上げ本文が変更されています。音声を再生成してください。', { exact: true }).waitFor();
+          assert.equal(await window.locator('.chapter-audio-generate').isEnabled(), false);
+          await window.locator('#scenario-confirm-button').click();
           assert.equal(await window.locator('.chapter-audio-generate').isEnabled(), true);
           await window.locator('.chapter-narration').fill(fixtureDraft.chapters[0].narration);
+          assert.equal(await window.locator('.chapter-audio-generate').isEnabled(), false);
+          await window.locator('#scenario-confirm-button').click();
           await window.locator('.chapter-audio-generate').click();
           await window.getByText(/^音声を保存しました（\d+\.\d+秒）。/).waitFor({ timeout: 120000 });
         }
@@ -1138,19 +1181,39 @@ async function main() {
       await window.locator('.subtitle-export-button').click();
       await window.getByText('SRT字幕を保存しました。', { exact: true }).waitFor();
       const savedSrt = await fs.readFile(path.join(projectDirectory, 'captions-01.srt'), 'utf8');
-      assert.match(savedSrt, /^1\r\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\r\n/u);
+      const savedCue = savedSrt.match(/^1\r\n(\d{2}):(\d{2}):(\d{2}),(\d{3}) -->/u);
+      assert.ok(savedCue, 'SRT export should contain a formatted first cue');
       assert.match(savedSrt, /変数は値を保存する名前付きの場所です。|変数を宣言します。/u);
+      const savedCueStartSeconds = Number(savedCue[1]) * 3600 + Number(savedCue[2]) * 60
+        + Number(savedCue[3]) + Number(savedCue[4]) / 1000;
+      const chapterCueStartSeconds = Number(await window.locator('.subtitle-start').first().inputValue());
+      assert.ok(
+        Math.abs(savedCueStartSeconds - chapterCueStartSeconds - 3) <= 0.001,
+        'standalone SRT should include the three-second video intro offset',
+      );
       if (await window.locator('.subtitle-row').count() > 1) {
         assert.ok(savedSrt.includes('\r\n\r\n'), 'SRT cues should be separated by a blank line');
       }
       assert.equal(await window.locator('.code-stage-row').count(), 2);
       assert.equal(await window.locator('.staged-code-preview').innerText(), '#include <stdio.h>');
       assert.equal(await window.locator('#subtitle-preview').isHidden(), true);
-      await window.locator('#timeline').evaluate((input) => {
-        input.value = '1';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+      const openingDuration = await window.locator('.chapter-audio-controls').evaluate((controls) => {
+        const audioAsset = JSON.parse(controls.dataset.audioAsset || 'null');
+        return audioAsset?.openingDurationSeconds ?? 0;
       });
+      const finalStageTime = Number(await window.locator('.code-stage-time').nth(1).inputValue());
+      const firstSubtitleStart = Number(await window.locator('.subtitle-start').first().inputValue());
+      const codePreviewTime = 3 + openingDuration + finalStageTime;
+      const subtitlePreviewTime = 3 + firstSubtitleStart + 0.1;
+      await window.locator('#timeline').evaluate((input, seconds) => {
+        input.value = String(seconds);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }, codePreviewTime);
       assert.equal(await window.locator('.staged-code-preview').innerText(), fixtureDraft.chapters[0].codeExample);
+      await window.locator('#timeline').evaluate((input, seconds) => {
+        input.value = String(seconds);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }, subtitlePreviewTime);
       assert.equal(await window.locator('#subtitle-preview').innerText(), withVoicevoxFixture || withLiveVoicevox
         ? '変数は値を保存する名前付きの場所です。'
         : '変数を宣言します。');
@@ -1181,6 +1244,11 @@ async function main() {
         input.value = '0.5';
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
+      assert.equal(Number(await window.locator('.chapter-audio').evaluate((audio) => audio.currentTime)), 0);
+      await window.locator('#timeline').evaluate((input) => {
+        input.value = '3.5';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
       assert.ok(Math.abs(Number(await window.locator('.chapter-audio').evaluate((audio) => audio.currentTime)) - 0.5) < 0.05);
       await window.locator('#timeline').evaluate((input) => {
         input.value = '0';
@@ -1195,34 +1263,38 @@ async function main() {
         input.value = '11';
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
-      assert.equal(await window.locator('#timeline').getAttribute('max'), '11');
-      await window.locator('#timeline').evaluate((input) => {
-        input.value = '11';
+      const lateStageVideoTime = 3 + openingDuration + 11;
+      assert.equal(await window.locator('#timeline').getAttribute('max'), String(lateStageVideoTime));
+      await window.locator('#timeline').evaluate((input, seconds) => {
+        input.value = String(seconds);
         input.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      assert.equal(await window.locator('.staged-code-preview').innerText(), fixtureDraft.chapters[0].codeExample);
+      }, lateStageVideoTime);
+      assert.equal(await window.locator('.staged-code-preview').innerText(), '#include <stdio.h>');
       await window.locator('.code-stage-time').nth(1).evaluate((input) => {
         input.value = '1';
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
-      assert.equal(await window.locator('#timeline').getAttribute('max'), '10');
+      const executionVideoTime = 3 + openingDuration + Number(await window.locator('.execution-time').inputValue());
+      assert.ok(Number(await window.locator('#timeline').getAttribute('max')) >= executionVideoTime);
 
       await window.locator('#rewind-button').click();
       assert.equal(await window.locator('#timeline').inputValue(), '0');
+      await window.locator('#timeline').evaluate((input, seconds) => {
+        input.value = String(seconds);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }, codePreviewTime - 0.4);
       await window.locator('#play-button').click();
       await window.waitForFunction(
-        ({ expectedCode, expectedSubtitle }) =>
-          document.querySelector('.staged-code-preview').textContent === expectedCode
-          && document.querySelector('#subtitle-preview').textContent === expectedSubtitle,
+        ({ expectedCode, expectedTime }) =>
+          Number(document.querySelector('#timeline').value) >= expectedTime
+          && document.querySelector('.staged-code-preview').textContent === expectedCode,
         {
           expectedCode: fixtureDraft.chapters[0].codeExample,
-          expectedSubtitle: withVoicevoxFixture || withLiveVoicevox
-            ? '変数は値を保存する名前付きの場所です。'
-            : '変数を宣言します。',
+          expectedTime: codePreviewTime,
         },
         { timeout: 3000 },
       );
-      assert.ok(Number(await window.locator('#timeline').inputValue()) >= 0.98);
+      assert.ok(Number(await window.locator('#timeline').inputValue()) >= codePreviewTime);
       assert.equal(await window.locator('.chapter-audio').evaluate((audio) => audio.paused), false);
       assert.ok(await window.locator('.chapter-audio').evaluate((audio) => audio.currentTime) >= 0.9);
       await window.locator('#pause-button').click();
@@ -1233,8 +1305,17 @@ async function main() {
       await window.locator('#rewind-button').click();
       assert.equal(await window.locator('#timeline').inputValue(), '0');
       await window.locator('.chapter-audio').evaluate((audio) => { void audio.play(); });
-      await window.waitForFunction(() => Number(document.querySelector('#timeline').value) > 0.15, null, { timeout: 3000 });
-      assert.ok(await window.locator('.chapter-audio').evaluate((audio) => audio.currentTime) > 0.15);
+      await window.waitForFunction(
+        () => document.querySelector('.chapter-audio').currentTime > 0.15,
+        null,
+        { timeout: 3000 },
+      );
+      await window.waitForFunction(
+        () => Number(document.querySelector('#timeline').value) > 3.15,
+        null,
+        { timeout: 3000 },
+      );
+      assert.ok(Number(await window.locator('#timeline').inputValue()) > 3.15);
       await window.locator('.chapter-audio').evaluate((audio) => audio.pause());
       await window.locator('#rewind-button').click();
 
@@ -1413,6 +1494,8 @@ async function main() {
       await window.locator('#scenario-open-button').click();
       await window.getByText('再確認が必要', { exact: true }).waitFor({ timeout: 30000 });
       const executeButton = window.locator('#scenario-editor .execution-controls button').first();
+      assert.equal(await executeButton.isEnabled(), false, 'unconfirmed C code must not execute');
+      await window.locator('#scenario-confirm-button').click();
       assert.equal(await executeButton.isEnabled(), true);
       await executeButton.click();
       const executionStatus = window.locator('#scenario-editor .execution-status');
@@ -1443,6 +1526,8 @@ async function main() {
       await window.locator('#scenario-open-button').click();
       await window.getByText('再確認が必要', { exact: true }).waitFor({ timeout: 30_000 });
       const executeButton = window.locator('#scenario-editor .execution-controls button').first();
+      assert.equal(await executeButton.isEnabled(), false, 'unconfirmed C code must not execute');
+      await window.locator('#scenario-confirm-button').click();
       const executionStatus = window.locator('#scenario-editor .execution-status');
       const expectedFailures = [
         ['compile-error', 'Cコードのコンパイルに失敗しました。標準エラーに表示されたGCCの診断を確認してください。'],
@@ -1463,6 +1548,7 @@ async function main() {
         if (mode === 'compile-error') {
           assert.match(await window.locator('.execution-output[aria-label="標準エラー"]').innerText(), /expected expression/);
         }
+        if (mode !== expectedFailures.at(-1)[0]) await window.locator('#scenario-confirm-button').click();
       }
       console.log('C execution UI showed actionable compile, non-zero exit, timeout, and output-limit guidance');
       return;
@@ -1705,11 +1791,15 @@ async function main() {
       return;
     } else {
       await window.locator('#video-export-button').click();
-      assert.match(await window.locator('#video-export-status').innerText(), /章を確認し/);
+      assert.equal(
+        await window.locator('#video-export-status').innerText(),
+        await window.locator('.scenario-checkbox input').isChecked()
+          ? 'この章で使うCコードの実行結果がありません。実行してから書き出してください。'
+          : '選択した章に保存済み音声がありません。音声を生成して保存してください。',
+      );
     }
 
     const mouthTimelinePath = path.resolve(__dirname, '../test-results/voicevox-mouth-timeline.json');
-    const mouthTimeline = JSON.parse(await fs.readFile(mouthTimelinePath, 'utf8'));
     const chapterVideoStatus = window.locator('.chapter-video-status').first();
     const markVideoCurrentForFreshnessCheck = () => chapterVideoStatus.evaluate((status) => {
       status.textContent = '動画: 最新';
@@ -1722,27 +1812,30 @@ async function main() {
       return document.querySelector('#render-canvas').toDataURL('image/png');
     }, seconds);
     if (withVoicevoxFixture) {
-      const savedAudioMouthFrame = await seekAndCapture(0.2);
+      const savedAudioMouthFrame = await seekAndCapture(3.2);
       assert.equal(await window.locator('#mouth-readout').innerText(), '口形: aa', 'saved chapter audio should drive lip sync without importing JSON');
-      assert.equal(await seekAndCapture(0.2), savedAudioMouthFrame, 'saved audio mouth cues should reproduce the same frame after seeking');
+      assert.equal(await seekAndCapture(3.2), savedAudioMouthFrame, 'saved audio mouth cues should reproduce the same frame after seeking');
     }
-    await window.locator('#mouth-timeline-file').setInputFiles(mouthTimelinePath);
-    await window.waitForFunction(
-      () => document.querySelector('#result-readout')?.textContent.includes('口パク時刻表読込完了'),
-      null,
-      { timeout: 30000 },
-    );
-    const aaShape = mouthTimeline.mouthTimeline.find((entry) => entry.expression === 'aa');
-    const ihShape = mouthTimeline.mouthTimeline.find((entry) => entry.expression === 'ih');
-    assert.ok(aaShape && ihShape, 'timeline should contain open and narrow vowel shapes');
-    const aaTime = (aaShape.start + aaShape.end) / 2;
-    const aaFrame = await seekAndCapture(aaTime);
-    assert.equal(await window.locator('#mouth-readout').innerText(), '口形: aa');
-    assert.equal(await seekAndCapture(aaTime), aaFrame, 'same vowel timestamp should reproduce the frame');
-    const ihFrame = await seekAndCapture((ihShape.start + ihShape.end) / 2);
-    assert.equal(await window.locator('#mouth-readout').innerText(), '口形: ih');
-    assert.notEqual(aaFrame, ihFrame, 'different vowels should render different mouth poses');
-    console.log('VOICEVOX vowel timeline drives deterministic VRM mouth expressions');
+    if (withLiveVoicevox) {
+      const mouthTimeline = JSON.parse(await fs.readFile(mouthTimelinePath, 'utf8'));
+      await window.locator('#mouth-timeline-file').setInputFiles(mouthTimelinePath);
+      await window.waitForFunction(
+        () => document.querySelector('#result-readout')?.textContent.includes('口パク時刻表読込完了'),
+        null,
+        { timeout: 30000 },
+      );
+      const aaShape = mouthTimeline.mouthTimeline.find((entry) => entry.expression === 'aa');
+      const ihShape = mouthTimeline.mouthTimeline.find((entry) => entry.expression === 'ih');
+      assert.ok(aaShape && ihShape, 'timeline should contain open and narrow vowel shapes');
+      const aaTime = (aaShape.start + aaShape.end) / 2;
+      const aaFrame = await seekAndCapture(3 + aaTime);
+      assert.equal(await window.locator('#mouth-readout').innerText(), '口形: aa');
+      assert.equal(await seekAndCapture(3 + aaTime), aaFrame, 'same vowel timestamp should reproduce the frame');
+      const ihFrame = await seekAndCapture(3 + (ihShape.start + ihShape.end) / 2);
+      assert.equal(await window.locator('#mouth-readout').innerText(), '口形: ih');
+      assert.notEqual(aaFrame, ihFrame, 'different vowels should render different mouth poses');
+      console.log('VOICEVOX vowel timeline drives deterministic VRM mouth expressions');
+    }
 
     const motionPath = withMaterialFreshnessFixture
       ? path.join(os.tmpdir(), `c-video-material-freshness-${process.pid}.vrma`)
@@ -1768,9 +1861,9 @@ async function main() {
         { timeout: 30000 },
       );
       assert.match(await window.locator('#result-readout').innerText(), /VRMA読込完了/);
-      const motionFrameA = await seekAndCapture(0.5);
-      const motionFrameB = await seekAndCapture(1);
-      const repeatedMotionFrame = await seekAndCapture(0.5);
+      const motionFrameA = await seekAndCapture(3.5);
+      const motionFrameB = await seekAndCapture(4);
+      const repeatedMotionFrame = await seekAndCapture(3.5);
       assert.notEqual(motionFrameA, motionFrameB, 'VRMA should change the pose at different times');
       assert.equal(motionFrameA, repeatedMotionFrame, 'seeking to the same time should reproduce the pose');
       console.log('VRMA loaded; distinct-time pose and deterministic seek checks passed');
@@ -1858,14 +1951,14 @@ async function main() {
         const context = comparisonCanvas.getContext('2d');
         if (!context) throw new Error('Could not create the frame comparison context.');
         context.drawImage(previewImage, 0, 0);
-        const previewPixels = context.getImageData(900, 0, 1020, 880).data;
+        const previewPixels = context.getImageData(1280, 0, 640, 880).data;
         context.clearRect(0, 0, comparisonCanvas.width, comparisonCanvas.height);
         context.drawImage(exportImage, 0, 0);
-        const exportPixels = context.getImageData(900, 0, 1020, 880).data;
+        const exportPixels = context.getImageData(1280, 0, 640, 880).data;
         let differingPixels = 0;
         let maximumChannelDelta = 0;
         let pixelsOverOneChannelDelta = 0;
-        const differenceBounds = { left: 1020, top: 880, right: -1, bottom: -1 };
+        const differenceBounds = { left: 640, top: 880, right: -1, bottom: -1 };
         for (let index = 0; index < previewPixels.length; index += 4) {
           let pixelMaximumChannelDelta = 0;
           for (let channel = 0; channel < 4; channel += 1) {
@@ -1879,8 +1972,8 @@ async function main() {
           maximumChannelDelta = Math.max(maximumChannelDelta, pixelMaximumChannelDelta);
           if (pixelMaximumChannelDelta > 1) pixelsOverOneChannelDelta += 1;
           const pixelNumber = index / 4;
-          const pixelX = pixelNumber % 1020;
-          const pixelY = Math.floor(pixelNumber / 1020);
+          const pixelX = pixelNumber % 640;
+          const pixelY = Math.floor(pixelNumber / 640);
           differenceBounds.left = Math.min(differenceBounds.left, pixelX);
           differenceBounds.top = Math.min(differenceBounds.top, pixelY);
           differenceBounds.right = Math.max(differenceBounds.right, pixelX);
@@ -1907,7 +2000,7 @@ async function main() {
       assert.equal(
         exportFrameComparison.differingPixels,
         0,
-        `preview/export pixels should match outside text overlays: ${JSON.stringify(exportFrameComparison)}`,
+        `preview/export avatar pixels should match outside the code and text overlays: ${JSON.stringify(exportFrameComparison)}`,
       );
       console.log('Full preview composition reproduced at the same timestamp');
       console.log(`Preview/export pixels matched: ${exportFrameComparison.comparedPixels}`);

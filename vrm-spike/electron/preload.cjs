@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('scenarioApi', Object.freeze({
   setCompanyApiKey: (apiKey) => ipcRenderer.invoke('scenario:set-company-api-key', apiKey),
   deleteCompanyApiKey: () => ipcRenderer.invoke('scenario:delete-company-api-key'),
   verifyCompanyApi: () => ipcRenderer.invoke('scenario:verify-company-api'),
+  prepareNewProject: () => ipcRenderer.invoke('scenario:prepare-new-project'),
   generate: (input, previousDraft) => ipcRenderer.invoke('scenario:generate', { input, previousDraft }),
   save: (request, draft) => ipcRenderer.invoke('scenario:save', { request, draft }),
   autoSave: (request, draft) => ipcRenderer.invoke('scenario:auto-save', { request, draft }),
@@ -30,9 +31,19 @@ contextBridge.exposeInMainWorld('cProgramApi', Object.freeze({
 
 contextBridge.exposeInMainWorld('voicevoxApi', Object.freeze({
   listSpeakers: () => ipcRenderer.invoke('voicevox:list-speakers'),
-  synthesize: (text, styleId) => ipcRenderer.invoke('voicevox:synthesize', { text, styleId }),
-  saveChapterAudio: (chapterIndex, audio, durationSeconds, styleId, narration, speakerName, mouthTimeline) =>
-    ipcRenderer.invoke('voicevox:save-chapter-audio', { chapterIndex, audio, durationSeconds, styleId, narration, speakerName, mouthTimeline }),
+  synthesize: (text, styleId, openingText) => ipcRenderer.invoke('voicevox:synthesize', { text, styleId, openingText }),
+  saveChapterAudio: (chapterIndex, audio, durationSeconds, openingText, openingDurationSeconds, styleId, narration, speakerName, mouthTimeline) =>
+    ipcRenderer.invoke('voicevox:save-chapter-audio', {
+      chapterIndex,
+      audio,
+      durationSeconds,
+      openingText,
+      openingDurationSeconds,
+      styleId,
+      narration,
+      speakerName,
+      mouthTimeline,
+    }),
   loadChapterAudio: (chapterIndex) => ipcRenderer.invoke('voicevox:load-chapter-audio', chapterIndex),
 }));
 

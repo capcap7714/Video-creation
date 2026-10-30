@@ -7,7 +7,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob: ws://127.0.0.1:5173; worker-src 'self' blob:;"
     />
-    <title>VRM実機スパイク</title>
+    <title>C言語学習動画作成ツール</title>
   </head>
   <body>
     <main class="shell">
@@ -73,12 +73,30 @@
         <div class="chapter-list-actions" hidden>
           <button id="chapter-add-button" type="button">章を追加</button>
         </div>
+        <section id="chapter-workflow" class="chapter-workflow" aria-labelledby="chapter-workflow-heading" hidden>
+          <div class="chapter-workflow-heading">
+            <div>
+              <p class="eyebrow">CHAPTER / NEXT STEP</p>
+              <h3 id="chapter-workflow-heading">選択章の制作工程</h3>
+            </div>
+            <output id="chapter-workflow-status" role="status" aria-live="polite"></output>
+          </div>
+          <ol id="chapter-workflow-checklist" class="chapter-workflow-checklist"></ol>
+          <div class="chapter-workflow-actions">
+            <button id="workflow-audio-button" type="button" disabled>章音声を生成</button>
+            <button id="workflow-c-run-button" type="button" disabled>選択章のCコードを実行</button>
+            <button id="workflow-preview-button" type="button" disabled>選択章をプレビュー</button>
+            <button id="video-export-button" type="button" disabled>選択章をMP4に書き出す</button>
+            <button id="video-cancel-button" type="button" disabled>書き出しを停止</button>
+          </div>
+          <output id="video-export-status" class="video-export-status" role="status" aria-live="polite"></output>
+        </section>
       </section>
 
       <header class="topbar">
         <div>
-          <p class="eyebrow">DEVICE SPIKE / 01</p>
-          <h1>VRM描画テスト</h1>
+          <p class="eyebrow">C LANGUAGE / VIDEO PRODUCTION</p>
+          <h1>章のプレビュー</h1>
         </div>
         <span id="runtime-status" class="runtime-status">モデル未読込</span>
       </header>
@@ -114,15 +132,12 @@
         <button id="capture-button" type="button" disabled>1080p PNG撮影</button>
         <button id="sequence-button" type="button" disabled>3秒フレームZIP</button>
         <button id="benchmark-button" type="button" disabled>30fps描画テスト</button>
-        <button id="video-export-button" type="button" disabled>章MP4を書き出す</button>
-        <button id="video-cancel-button" type="button" disabled>書き出しを停止</button>
         <button id="ffmpeg-check-button" type="button">FFmpegを確認</button>
         <output id="ffmpeg-status" class="ffmpeg-status" role="status" aria-live="polite">未確認</output>
         <button id="dependency-check-button" type="button">環境をまとめて確認</button>
         <output id="dependency-status" class="dependency-status" role="status" aria-live="polite"></output>
         <button id="diagnostic-copy-button" type="button">環境情報をコピー</button>
         <output id="diagnostic-copy-status" class="diagnostic-copy-status" role="status" aria-live="polite"></output>
-        <output id="video-export-status" class="video-export-status" role="status" aria-live="polite"></output>
       </section>
 
       <section id="voicevox-panel" class="voicevox-panel" aria-labelledby="voicevox-heading" hidden>
@@ -147,7 +162,7 @@
         <p id="voicevox-license-status" class="voicevox-license-status" role="status" aria-live="polite">利用条件の確認前は試聴・章音声を生成できません。</p>
       </section>
 
-      <section class="stage" aria-label="1920×1080 VRM描画領域">
+      <section class="stage" aria-label="1920×1080 動画プレビュー">
         <canvas id="render-canvas" width="1920" height="1080"></canvas>
         <pre id="video-code-preview" class="video-code-preview" hidden></pre>
         <pre id="video-result-preview" class="video-result-preview" hidden></pre>

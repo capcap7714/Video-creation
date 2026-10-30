@@ -7,6 +7,10 @@ const MAX_AUDIO_BYTES = 50 * 1024 * 1024;
 const MAX_MODEL_BYTES = 512 * 1024 * 1024;
 const PROJECT_SAVE_RECOVERY_FILE = '.project-save-recovery.json';
 
+function getOpeningText(title) {
+  return `こんにちは。今日は${title}について勉強します。`;
+}
+
 async function writeJsonAtomically(filePath, value) {
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -104,11 +108,16 @@ function getAudioAsset(fileBytes, scenario) {
     audioAsset?.path !== 'audio/narration.wav'
     || !Number.isFinite(audioAsset.durationSeconds)
     || audioAsset.durationSeconds <= 0
+    || !Number.isFinite(audioAsset.openingDurationSeconds)
+    || audioAsset.openingDurationSeconds <= 0
+    || audioAsset.openingDurationSeconds >= audioAsset.durationSeconds
     || !Number.isSafeInteger(audioAsset.styleId)
     || !/^[a-f0-9]{64}$/.test(audioAsset.narrationHash)
     || !isValidMouthTimeline(mouthTimeline, audioAsset.durationSeconds)
   ) return null;
-  const narrationHash = createHash('sha256').update(scenario.narration, 'utf8').digest('hex');
+  const narrationHash = createHash('sha256')
+    .update(`${getOpeningText(scenario.title)}${scenario.narration}`, 'utf8')
+    .digest('hex');
   return narrationHash === audioAsset.narrationHash
     ? { ...audioAsset, mouthTimeline }
     : null;
@@ -401,9 +410,13 @@ async function saveChapterAudio(projectDirectory, chapterIndex, audio, details) 
     || details.durationSeconds > 3600
     || !Number.isSafeInteger(details?.styleId)
     || details.styleId < 0
+    || !Number.isFinite(details?.openingDurationSeconds)
+    || details.openingDurationSeconds <= 0
+    || details.openingDurationSeconds >= details.durationSeconds
     || (details.speakerName !== undefined && (typeof details.speakerName !== 'string' || details.speakerName.trim().length === 0 || details.speakerName.length > 100))
     || typeof details?.narration !== 'string'
     || details.narration !== scenario.narration
+    || details.openingText !== getOpeningText(scenario.title)
     || !isValidMouthTimeline(details.mouthTimeline ?? [], details.durationSeconds)
   ) {
     throw new Error('Invalid audio asset.');
@@ -414,7 +427,10 @@ async function saveChapterAudio(projectDirectory, chapterIndex, audio, details) 
     durationSeconds: details.durationSeconds,
     styleId: details.styleId,
     speakerName: details.speakerName?.trim() || '話者名未記録',
-    narrationHash: createHash('sha256').update(details.narration, 'utf8').digest('hex'),
+    narrationHash: createHash('sha256')
+      .update(`${details.openingText}${details.narration}`, 'utf8')
+      .digest('hex'),
+    openingDurationSeconds: details.openingDurationSeconds,
     mouthTimeline: details.mouthTimeline ?? [],
   };
   const audioPath = path.join(projectDirectory, 'chapters', id, 'audio', 'narration.wav');

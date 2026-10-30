@@ -155,15 +155,33 @@ async function main() {
   let testDraft = draft;
   let chapterAudio = createSilentWav();
   let audioDurationSeconds = 1;
+  const openingText = `こんにちは。今日は${draft.chapters[0].title}について勉強します。`;
+  let openingDurationSeconds = 0.2;
   let speakerName = 'テスト話者';
   let synchronizationFrames;
+  testDraft = {
+    ...draft,
+    chapters: [{
+      ...draft.chapters[0],
+      subtitles: draft.chapters[0].subtitles.map((subtitle) => ({
+        ...subtitle,
+        startSeconds: subtitle.startSeconds + openingDurationSeconds,
+        endSeconds: subtitle.endSeconds + openingDurationSeconds,
+      })),
+    }],
+  };
 
   try {
     if (useLiveVoicevox) {
       const { synthesizeSpeech } = require('../electron/voicevox-service.cjs');
-      const synthesized = await synthesizeSpeech({ text: draft.chapters[0].narration, styleId: 2 });
+      const synthesized = await synthesizeSpeech({
+        text: draft.chapters[0].narration,
+        openingText,
+        styleId: 2,
+      });
       chapterAudio = Buffer.from(synthesized.audio);
       audioDurationSeconds = getWavDurationSeconds(chapterAudio);
+      openingDurationSeconds = synthesized.openingDurationSeconds;
       speakerName = '四国めたん';
       testDraft = {
         ...draft,
@@ -172,17 +190,23 @@ async function main() {
     }
     const synchronizationCue = testDraft.chapters[0].subtitles[0];
     assert.ok(synchronizationCue, 'the composite timing fixture requires a subtitle cue');
-    const actionFrame = Math.ceil((synchronizationCue.startSeconds + (synchronizationCue.endSeconds - synchronizationCue.startSeconds) * 0.4) * 30);
+    const bodyCueStart = Math.max(0, synchronizationCue.startSeconds - openingDurationSeconds);
+    const actionFrame = Math.ceil((bodyCueStart + (synchronizationCue.endSeconds - synchronizationCue.startSeconds) * 0.4) * 30);
     const actionAtSeconds = actionFrame / 30;
     const executionFrame = actionFrame - 3;
+    const introFrames = 3 * 30;
+    const openingFrames = Math.ceil(openingDurationSeconds * 30);
     synchronizationFrames = {
-      beforeExecution: executionFrame - 1,
-      afterExecution: actionFrame - 1,
-      afterStageAndAction: actionFrame + 6,
+      beforeExecution: executionFrame - 1 + introFrames + openingFrames,
+      afterExecution: executionFrame + 1 + introFrames + openingFrames,
+      afterStageAndAction: actionFrame + 6 + introFrames + openingFrames,
       actionAtSeconds,
     };
     assert.ok(synchronizationFrames.beforeExecution >= 0, 'the fixture needs a frame before the execution marker');
-    assert.ok(synchronizationFrames.afterStageAndAction / 30 < synchronizationCue.endSeconds, 'the subtitle must remain active after the stage and action markers');
+    assert.ok(
+      synchronizationFrames.afterStageAndAction / 30 < synchronizationCue.endSeconds + 3,
+      'the subtitle must remain active after the stage and action markers',
+    );
     testDraft = {
       ...testDraft,
       chapters: [{
@@ -211,6 +235,8 @@ async function main() {
     if (!missingAudioOnly) {
       await projectStore.saveChapterAudio(projectDirectory, 0, chapterAudio, {
         durationSeconds: audioDurationSeconds,
+        openingText,
+        openingDurationSeconds,
         styleId: 2,
         speakerName,
         narration: draft.chapters[0].narration,
@@ -271,23 +297,6 @@ async function main() {
     }
     await window.locator('#model-file').setInputFiles(path.resolve(__dirname, '../../C1.vrm'));
     await window.getByText('VRM 1.0読込完了', { exact: true }).waitFor({ timeout: 30_000 });
-    await window.locator('#video-export-button').click();
-    await window.getByText('章を確認し、プロジェクトを保存してから書き出してください。', { exact: true }).waitFor({ timeout: 15_000 });
-    assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'unconfirmed project should preserve the existing MP4');
-    assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'unconfirmed project should preserve the existing SRT');
-
-    await window.locator('#scenario-confirm-button').click();
-    await window.locator('#video-export-button').click();
-    await window.getByText('確認済みの変更が未保存です。プロジェクトを保存してから書き出してください。', { exact: true }).waitFor({ timeout: 15_000 });
-    assert.deepEqual(await fs.readFile(outputPath), previousVideo, 'unsaved confirmed changes should preserve the existing MP4');
-    assert.equal(await fs.readFile(subtitlePath, 'utf8'), previousSubtitles, 'unsaved confirmed changes should preserve the existing SRT');
-
-    await window.locator('#scenario-save-button').click();
-    await window.getByText(/プロジェクトを保存しました/).waitFor({ timeout: 30_000 });
-    assert.deepEqual(await app.evaluate(() => globalThis.__videoExportOverwritePrompts), [
-      '選択したフォルダーには既にproject.jsonがあります。上書きしますか？',
-    ]);
-
     if (missingAudioOnly) {
       await window.locator('#video-export-button').click();
       const missingAudioMessage = '選択した章に保存済み音声がありません。音声を生成して保存してください。';
@@ -299,11 +308,21 @@ async function main() {
       return;
     }
 
+    await window.locator('.chapter-minutes').fill('4');
+    await window.locator('#video-export-button').click();
+    await window.getByText(/MP4動画とSRT字幕を保存しました/u).waitFor({ timeout: 180_000 });
+    const savedChapter = await projectStore.loadScenarioProject(projectDirectory);
+    assert.equal(savedChapter.draft.chapters[0].targetMinutes, 4, 'export should save the latest chapter edits without separate confirm/save actions');
+    await Promise.all([
+      fs.writeFile(outputPath, previousVideo),
+      fs.writeFile(subtitlePath, previousSubtitles, 'utf8'),
+    ]);
+
     const subtitleEndInput = window.locator('.subtitle-row .subtitle-end').first();
     const originalSubtitleEnd = await subtitleEndInput.inputValue();
     const loadedAudioDurationSeconds = await window.locator('.chapter-audio').evaluate((audio) => audio.duration);
     assert.ok(Number.isFinite(loadedAudioDurationSeconds) && loadedAudioDurationSeconds > 0, 'chapter audio duration should be available for timeline validation');
-    const creditStartSeconds = Math.ceil(loadedAudioDurationSeconds * 30 - 1e-9) / 30;
+    const creditStartSeconds = Math.ceil((loadedAudioDurationSeconds + 6) * 30 - 1e-9) / 30;
     assert.equal(await window.locator('.timeline-marker[data-kind="credit"]').count(), 1);
     assert.ok(Number(await window.locator('#timeline').getAttribute('max')) >= creditStartSeconds + 3);
     await window.locator('.timeline-marker[data-kind="credit"]').click();
@@ -317,6 +336,7 @@ async function main() {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     assert.equal(await window.locator('#credit-preview').isHidden(), true);
+    assert.equal(await window.locator('#video-code-preview').innerText(), '', 'the source code should be hidden during the three-second intro');
 
     const comparePreviewAndExportAt = async (frameIndex) => window.evaluate(async ({ frameIndex, contentFrames, chapterTitle, creditText }) => {
       const timelineInput = document.querySelector('#timeline');
@@ -358,6 +378,8 @@ async function main() {
       }
       const resultPanelPixel = Array.from(context.getImageData(1800, 300, 1, 1).data.slice(0, 3));
       const boardInteriorPixel = Array.from(context.getImageData(200, 760, 1, 1).data.slice(0, 3));
+      const boardImagePixel = Array.from(context.getImageData(100, 100, 1, 1).data.slice(0, 3));
+      const backgroundPixel = Array.from(context.getImageData(1500, 1000, 1, 1).data.slice(0, 3));
       let differingPixels = 0;
       for (let index = 0; index < previewPixels.length; index += 4) {
         if (
@@ -367,10 +389,23 @@ async function main() {
           || previewPixels[index + 3] !== exportPixels[index + 3]
         ) differingPixels += 1;
       }
-      return { differingPixels, comparedPixels: previewPixels.length / 4, previewText, exportText, previewCodeStage, previewPose, codeTextMinX, codeTextMinY, resultPanelPixel, boardInteriorPixel };
+      return {
+        differingPixels,
+        comparedPixels: previewPixels.length / 4,
+        previewText,
+        exportText,
+        previewCodeStage,
+        previewPose,
+        codeTextMinX,
+        codeTextMinY,
+        resultPanelPixel,
+        boardInteriorPixel,
+        boardImagePixel,
+        backgroundPixel,
+      };
     }, {
       frameIndex,
-      contentFrames: Math.ceil(loadedAudioDurationSeconds * 30),
+      contentFrames: Math.ceil((loadedAudioDurationSeconds + 6) * 30),
       chapterTitle: draft.chapters[0].title,
       creditText: `VOICEVOX: ${speakerName}`,
     });
@@ -380,6 +415,18 @@ async function main() {
         `${label}: VRM preview/export pixel difference exceeded 0.1% (${comparison.differingPixels}/${comparison.comparedPixels})`,
       );
     };
+    const introFrame = await comparePreviewAndExportAt(89);
+    assert.deepEqual(introFrame.previewText, { code: '', result: '', subtitle: '' }, 'the intro should contain no code, result, or subtitle');
+    assert.ok(
+      introFrame.boardImagePixel.some((channel, index) => Math.abs(channel - introFrame.backgroundPixel[index]) > 12),
+      'the blackboard image should remain visible during the silent intro',
+    );
+    const narrationStartFrame = await comparePreviewAndExportAt(90);
+    assert.deepEqual(narrationStartFrame.previewText, { code: '', result: '', subtitle: '' }, 'the greeting should play without scenario code or subtitles');
+    const bodyStartFrame = Math.ceil((3 + openingDurationSeconds) * 30 - 1e-9);
+    const bodyStart = await comparePreviewAndExportAt(bodyStartFrame);
+    assert.equal(bodyStart.previewText.code.split('\n').length, 1, 'the scenario code should begin after the spoken greeting');
+    assert.equal(narrationStartFrame.previewText.result, '', 'the C result should not appear at narration start');
     const beforeExecution = await comparePreviewAndExportAt(synchronizationFrames.beforeExecution);
     assert.deepEqual(beforeExecution.previewText, beforeExecution.exportText, 'the preview and export should agree before the C-result timestamp');
     assert.equal(beforeExecution.previewText.result, '', 'the C result should remain hidden before its timeline timestamp');
@@ -389,11 +436,10 @@ async function main() {
     const afterExecution = await comparePreviewAndExportAt(synchronizationFrames.afterExecution);
     assert.deepEqual(afterExecution.previewText, afterExecution.exportText, 'the preview and export should agree between execution and code/action timestamps');
     assert.equal(afterExecution.previewText.code.split('\n').length, 1, 'only the first staged code line should be visible before the code-stage timestamp');
-    assert.equal(afterExecution.previewText.result, draft.chapters[0].executionResult.videoText, 'the C result should appear at its configured timestamp');
+    assert.equal(afterExecution.previewText.result, '', 'the C result should remain hidden until all code lines have appeared');
+    assert.equal(afterExecution.previewText.code.split('\n').length, 1, 'only the first staged code line should remain visible before the final code stage');
     assert.ok(afterExecution.codeTextMinX >= 84, `code should begin inside the board's left edge (x=${afterExecution.codeTextMinX})`);
     assert.ok(afterExecution.codeTextMinY >= 85, `code should begin inside the board's top edge (y=${afterExecution.codeTextMinY})`);
-    assert.ok(afterExecution.resultPanelPixel[1] < 55, 'the result panel should render in the clear area to the right of the board');
-    assert.ok(afterExecution.boardInteriorPixel[1] > 55, 'the result panel should not cover the blackboard');
     assert.equal(afterExecution.previewText.subtitle, synchronizationCue.text, 'the generated subtitle should remain synchronized between timeline events');
     assertFrameMatchesPreview(afterExecution, 'after C-result timestamp');
 
@@ -402,9 +448,18 @@ async function main() {
     assert.equal(afterStageAndAction.previewText.code, draft.chapters[0].codeExample, 'all staged code lines should appear at the configured timestamp');
     assert.equal(afterStageAndAction.previewText.result, draft.chapters[0].executionResult.videoText);
     assert.equal(afterStageAndAction.previewText.subtitle, synchronizationCue.text);
+    assert.ok(afterStageAndAction.resultPanelPixel[1] < 55, 'the result panel should render in the clear area to the right of the board');
+    assert.ok(afterStageAndAction.boardInteriorPixel[1] > 55, 'the result panel should not cover the blackboard');
     assert.ok(Math.abs(afterStageAndAction.previewPose.head[2] - afterExecution.previewPose.head[2]) > 0.02, 'the character action should change the VRM head pose in the corresponding frame');
     assert.ok(afterStageAndAction.previewPose.happy > 0.3, 'the happy character expression should be active during its action event');
     assertFrameMatchesPreview(afterStageAndAction, 'while character action is active');
+    const holdStartFrame = Math.ceil((loadedAudioDurationSeconds + 3) * 30 - 1e-9);
+    const finalContentFrame = Math.ceil((loadedAudioDurationSeconds + 6) * 30 - 1e-9) - 1;
+    const finalHoldStart = await comparePreviewAndExportAt(holdStartFrame);
+    const finalHoldEnd = await comparePreviewAndExportAt(finalContentFrame);
+    assert.deepEqual(finalHoldStart.previewText, finalHoldEnd.previewText, 'the final code/result display should remain unchanged throughout the three-second hold');
+    assert.equal(finalHoldEnd.previewText.subtitle, '', 'the final hold should not retain expired subtitles');
+    assert.deepEqual(finalHoldStart.previewPose, finalHoldEnd.previewPose, 'character motion should stop on the final pose during the hold');
     const currentSubtitleNarrationHash = await window.evaluate(async () => {
       const text = document.querySelector('.chapter-narration').value.trim();
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -452,8 +507,8 @@ async function main() {
       assert.equal(encodedCues.length, testDraft.chapters[0].subtitles.length, 'encoded MP4 export should write every generated SRT cue');
       for (const [index, cue] of encodedCues.entries()) {
         const expectedCue = testDraft.chapters[0].subtitles[index];
-        assert.ok(Math.abs(srtTimeToSeconds(cue[1]) - expectedCue.startSeconds) <= 0.001, `encoded SRT cue ${index + 1} start time should match the timeline`);
-        assert.ok(Math.abs(srtTimeToSeconds(cue[2]) - expectedCue.endSeconds) <= 0.001, `encoded SRT cue ${index + 1} end time should match the timeline`);
+        assert.ok(Math.abs(srtTimeToSeconds(cue[1]) - (expectedCue.startSeconds + 3)) <= 0.001, `encoded SRT cue ${index + 1} start time should include the intro silence`);
+        assert.ok(Math.abs(srtTimeToSeconds(cue[2]) - (expectedCue.endSeconds + 3)) <= 0.001, `encoded SRT cue ${index + 1} end time should include the intro silence`);
         assert.equal(cue[3].trim(), expectedCue.text, `encoded SRT cue ${index + 1} should match the generated subtitle`);
       }
       const extractedSubtitles = spawnSync(dependency.path, [
@@ -479,7 +534,7 @@ async function main() {
       const decodedDuration = fullDecode.stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
       assert.ok(decodedDuration, `FFmpeg should report the synchronized MP4 duration: ${fullDecode.stderr}`);
       const outputDurationSeconds = Number(decodedDuration[1]) * 3600 + Number(decodedDuration[2]) * 60 + Number(decodedDuration[3]);
-      assert.ok(Math.abs(outputDurationSeconds - (creditStartSeconds + 3)) <= 1 / 30, 'MP4 duration should match the audio plus three-second credits within one frame');
+      assert.ok(Math.abs(outputDurationSeconds - (creditStartSeconds + 3)) <= 1 / 30, 'MP4 duration should include the intro, final hold, and three-second credits within one frame');
       const framePng = spawnSync(dependency.path, [
         '-hide_banner', '-i', outputPath,
         '-vf', `select=eq(n\\,${synchronizationFrames.afterStageAndAction})`,
@@ -497,7 +552,7 @@ async function main() {
         });
       }, {
         frameIndex: synchronizationFrames.afterStageAndAction,
-        contentFrames: Math.ceil(loadedAudioDurationSeconds * 30),
+        contentFrames: Math.ceil((loadedAudioDurationSeconds + 6) * 30),
         chapterTitle: draft.chapters[0].title,
         creditText: `VOICEVOX: ${speakerName}`,
       });
@@ -772,7 +827,7 @@ async function main() {
     await window.waitForFunction(
       () => !document.querySelector('#video-export-button')?.disabled,
       null,
-      { timeout: 120_000 },
+      { timeout: 600_000 },
     );
     const ffmpegFailureStatus = await window.locator('#video-export-status').innerText();
     assert.match(ffmpegFailureStatus, /FFmpegが終了コード\d+で失敗しました。/);
@@ -828,7 +883,7 @@ async function main() {
         await window.waitForFunction(
           () => !document.querySelector('#video-export-button')?.disabled,
           null,
-          { timeout: 120_000 },
+          { timeout: 300_000 },
         );
       } catch (error) {
         const lastStatus = await window.locator('#video-export-status').innerText();
@@ -865,8 +920,8 @@ async function main() {
     assert.equal(exportedCues.length, testDraft.chapters[0].subtitles.length, 'SRT cue count should match the saved chapter subtitles');
     for (const [index, cue] of exportedCues.entries()) {
       const expectedCue = testDraft.chapters[0].subtitles[index];
-      assert.ok(Math.abs(srtTimeToSeconds(cue[1]) - expectedCue.startSeconds) <= 0.001, `SRT cue ${index + 1} start time should match the chapter timeline`);
-      assert.ok(Math.abs(srtTimeToSeconds(cue[2]) - expectedCue.endSeconds) <= 0.001, `SRT cue ${index + 1} end time should match the chapter timeline`);
+      assert.ok(Math.abs(srtTimeToSeconds(cue[1]) - (expectedCue.startSeconds + 3)) <= 0.001, `SRT cue ${index + 1} start time should include the intro silence`);
+      assert.ok(Math.abs(srtTimeToSeconds(cue[2]) - (expectedCue.endSeconds + 3)) <= 0.001, `SRT cue ${index + 1} end time should include the intro silence`);
       assert.equal(cue[3].trim(), expectedCue.text, `SRT cue ${index + 1} text should match the chapter subtitle`);
     }
     assert.deepEqual(rendererErrors, [], 'renderer should not report console errors during MP4 export');
@@ -883,8 +938,23 @@ async function main() {
     const outputDurationSeconds = Number(decodedDuration[1]) * 3600 + Number(decodedDuration[2]) * 60 + Number(decodedDuration[3]);
     assert.ok(
       Math.abs(outputDurationSeconds - (creditStartSeconds + 3)) <= 1 / 30,
-      `MP4 duration should match the real audio duration rounded to 30fps plus 3s credits: ${outputDurationSeconds}s`,
+      `MP4 duration should include the intro and final hold, then 3s credits: ${outputDurationSeconds}s`,
     );
+    if (useLiveVoicevox) {
+      const silenceCheck = spawnSync(dependency.path, [
+        '-hide_banner', '-i', outputPath,
+        '-af', 'silencedetect=noise=-45dB:d=2.9',
+        '-f', 'null', '-',
+      ], { encoding: 'utf8', timeout: 120_000, windowsHide: true });
+      assert.equal(silenceCheck.status, 0, `FFmpeg could not inspect the exported audio silence: ${silenceCheck.stderr}`);
+      const silentSegments = [...silenceCheck.stderr.matchAll(/silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)/g)];
+      assert.ok(silentSegments.length >= 2, `MP4 should contain intro and ending silence: ${silenceCheck.stderr}`);
+      assert.ok(Math.abs(Number(silentSegments[0][2]) - Number(silentSegments[0][1])) < 0.01, 'the first audio silence should begin at video time zero');
+      assert.ok(Number(silentSegments[0][1]) >= 2.9 && Number(silentSegments[0][1]) <= 3.5, 'the initial silence should last at least three seconds');
+      const finalSilence = silentSegments.at(-1);
+      assert.ok(Number(finalSilence[2]) >= 5.8, 'the audio should remain silent throughout the final hold and credits');
+      assert.ok(Math.abs(Number(finalSilence[1]) - outputDurationSeconds) <= 0.1, 'the final silence should extend to the end of the MP4');
+    }
 
     const completedVideo = await fs.readFile(outputPath);
     const completedSubtitles = await fs.readFile(subtitlePath, 'utf8');

@@ -46,6 +46,7 @@ async function main() {
   ].slice(0, 12));
   assert.equal(call.args[call.args.indexOf('-t') + 1], '8.250');
   assert.equal(call.args[call.args.indexOf('-map') + 1], '0:v:0');
+  assert.equal(call.args[call.args.indexOf('-af') + 1], 'adelay=delays=3000:all=1,apad=pad_dur=6');
   assert.ok(call.args.includes('libx264'));
   assert.ok(call.args.includes('aac'));
   assert.ok(call.args.includes('mov_text'));
@@ -81,7 +82,7 @@ async function main() {
   await assert.rejects(invalidFrame.writeFrame(Buffer.from('not png')), /PNGフレーム/);
   await invalidFrame.finish();
 
-  console.log('Video export: 30fps PNG streaming, chapter audio/SRT mapping, 3-second credit duration, H.264/AAC mux, and frame validation passed.');
+  console.log('Video export: 30fps PNG streaming, 3-second intro/final hold/credit timing, chapter audio/SRT mapping, H.264/AAC mux, and frame validation passed.');
 }
 
 main().catch((error) => {

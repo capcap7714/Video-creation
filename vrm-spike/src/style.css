@@ -213,6 +213,18 @@ canvas { display: block; width: 100%; height: 100%; }
 .chapter-item-actions button { min-height: 30px; padding: 5px 9px; font-size: 11px; }
 .chapter-list-actions { margin-top: 12px; }
 .chapter-list-actions[hidden] { display: none; }
+.chapter-workflow { display: grid; gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-left: 4px solid var(--accent); background: rgba(255,255,255,.62); }
+.chapter-workflow[hidden] { display: none; }
+.chapter-workflow-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.chapter-workflow-heading h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.chapter-workflow-heading .eyebrow { margin: 0 0 5px; }
+.chapter-workflow-heading output { color: var(--muted); font-size: 12px; line-height: 1.5; text-align: right; }
+.chapter-workflow-checklist { display: grid; gap: 6px; margin: 0; padding-left: 22px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.chapter-workflow-checklist [data-state="ready"] { color: #236b47; }
+.chapter-workflow-checklist [data-state="needs-attention"] { color: #913c2b; }
+.chapter-workflow-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.narration-timing-status { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.narration-timing-status[data-state="warning"] { color: #913c2b; }
 .chapter-material-status { margin: 0; padding: 8px 10px; border-left: 2px solid #236b47; color: #236b47; font-size: 12px; line-height: 1.5; }
 .chapter-material-status[data-state="needs-attention"] { border-color: #a44b35; color: #913c2b; }
 .chapter-video-status[data-state="unknown"] { color: var(--muted); }

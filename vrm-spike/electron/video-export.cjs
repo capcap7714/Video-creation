@@ -19,7 +19,7 @@ function createVideoEncoder({
     || typeof outputPath !== 'string'
     || !Number.isFinite(contentDurationSeconds)
     || contentDurationSeconds <= 0
-    || contentDurationSeconds > 3600
+    || contentDurationSeconds > 3606
   ) {
     throw new Error('動画の書き出し設定を確認してください。');
   }
@@ -33,7 +33,7 @@ function createVideoEncoder({
     '-map', '0:v:0', '-map', '1:a:0', '-map', '2:s:0',
     '-t', totalDurationSeconds.toFixed(3),
     '-vf', 'format=yuv420p',
-    '-af', 'apad=pad_dur=3',
+    '-af', 'adelay=delays=3000:all=1,apad=pad_dur=6',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
     '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
     '-c:s', 'mov_text', '-movflags', '+faststart',

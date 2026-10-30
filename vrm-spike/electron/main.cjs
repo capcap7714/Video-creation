@@ -15,7 +15,7 @@ const { findGcc, runCProgram } = require('./c-runner.cjs');
 const { checkFfmpeg } = require('./ffmpeg-service.cjs');
 const { formatSrt } = require('./subtitle-export.cjs');
 const { createVideoEncoder } = require('./video-export.cjs');
-const { listSpeakers, synthesizeSpeech } = require('./voicevox-service.cjs');
+const { listSpeakers, normalizeSubtitleTiming, synthesizeSpeech } = require('./voicevox-service.cjs');
 const {
   CompanyApiError,
   requestCompanyChatCompletion,
@@ -29,7 +29,17 @@ const activeProjectDirectories = new Map();
 let testVideoExportFailureInjected = false;
 const VIDEO_EXPORT_ESTIMATED_BITRATE_BPS = 12_000_000;
 const VIDEO_EXPORT_STORAGE_RESERVE_BYTES = 64 * 1024 * 1024;
+const VIDEO_INTRO_SILENCE_SECONDS = 3;
+const VIDEO_FINAL_HOLD_SECONDS = 3;
 app.setPath('userData', path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'CVideoToolSpike'));
+
+function offsetSubtitlesForVideo(subtitles) {
+  return subtitles.map((subtitle) => ({
+    ...subtitle,
+    startSeconds: subtitle.startSeconds + VIDEO_INTRO_SILENCE_SECONDS,
+    endSeconds: subtitle.endSeconds + VIDEO_INTRO_SILENCE_SECONDS,
+  }));
+}
 
 async function readScenarioAiProvider() {
   try {
@@ -201,14 +211,14 @@ function createTestWav() {
   return new Uint8Array(wav);
 }
 
-function createTestSubtitles(text) {
+function createTestSubtitles(text, audioDurationSeconds = 4, openingDurationSeconds = 0) {
   const sentences = (text.match(/[^。！？!?]+[。！？!?]*|[。！？!?]+/gu) ?? [text])
     .map((sentence) => sentence.trim())
     .filter(Boolean);
-  const segmentDuration = 4 / sentences.length;
+  const segmentDuration = (audioDurationSeconds - openingDurationSeconds) / sentences.length;
   return sentences.map((sentence, index) => ({
-    startSeconds: Math.round((index * segmentDuration + 0.02) * 1000) / 1000,
-    endSeconds: Math.round(((index + 1) * segmentDuration - 0.02) * 1000) / 1000,
+    startSeconds: Math.round((openingDurationSeconds + index * segmentDuration + 0.02) * 1000) / 1000,
+    endSeconds: Math.round((openingDurationSeconds + (index + 1) * segmentDuration - 0.02) * 1000) / 1000,
     text: sentence,
   }));
 }
@@ -457,7 +467,7 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
 
   let subtitles;
   try {
-    subtitles = formatSrt(chapter.subtitles);
+    subtitles = formatSrt(offsetSubtitlesForVideo(chapter.subtitles));
   } catch (error) {
     return { started: false, message: error instanceof Error ? error.message : '字幕を確認してください。' };
   }
@@ -486,7 +496,10 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
     };
   }
   const availableBytes = await getAvailableBytes(path.dirname(outputPath));
-  const estimatedOutputBytes = estimateVideoExportBytes(chapter.audioAsset.durationSeconds, audio, subtitles);
+  const contentDurationSeconds = chapter.audioAsset.durationSeconds
+    + VIDEO_INTRO_SILENCE_SECONDS
+    + VIDEO_FINAL_HOLD_SECONDS;
+  const estimatedOutputBytes = estimateVideoExportBytes(contentDurationSeconds, audio, subtitles);
   if (availableBytes !== null && availableBytes < estimatedOutputBytes) {
     const warning = await dialog.showMessageBox(owner, {
       type: 'warning',
@@ -526,10 +539,10 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
       audioPath,
       subtitlesPath,
       outputPath: temporaryOutputPath,
-      contentDurationSeconds: chapter.audioAsset.durationSeconds,
+      contentDurationSeconds,
     });
     const exportId = randomUUID();
-    const contentFrames = Math.ceil(chapter.audioAsset.durationSeconds * 30);
+    const contentFrames = Math.ceil(contentDurationSeconds * 30);
     const frameCount = contentFrames + 90;
     activeVideoExports.set(exportId, {
       senderId: event.sender.id,
@@ -547,7 +560,7 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
       exportId,
       frameCount,
       chapterTitle: chapter.title,
-      contentDurationSeconds: chapter.audioAsset.durationSeconds,
+      contentDurationSeconds,
       creditText: `VOICEVOX: ${chapter.audioAsset.speakerName ?? `話者スタイルID ${chapter.audioAsset.styleId}`}`,
       message: 'フレームを生成しています。',
     };
@@ -643,23 +656,39 @@ ipcMain.handle('voicevox:synthesize', async (_event, payload = {}) => {
   if (
     typeof payload.text !== 'string'
     || payload.text.trim().length === 0
-    || payload.text.length > 1000
+    || payload.text.length > 10000
+    || (payload.openingText !== undefined && (
+      typeof payload.openingText !== 'string'
+      || payload.openingText.length > 200
+    ))
     || !Number.isSafeInteger(payload.styleId)
     || payload.styleId < 0
   ) {
-    return { generated: false, message: '読み上げ文と話者を確認してください。' };
+    return { generated: false, message: '読み上げ文（10,000文字以内）と話者を確認してください。' };
   }
   if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VOICEVOX_MODE === 'speakers') {
+    const openingDurationSeconds = payload.openingText ? 0.8 : 0;
+    const audioDurationSeconds = 4;
     return {
       generated: true,
       audio: createTestWav(),
-      subtitles: createTestSubtitles(payload.text),
+      subtitles: normalizeSubtitleTiming(
+        createTestSubtitles(payload.text, audioDurationSeconds, openingDurationSeconds),
+        audioDurationSeconds,
+      ),
       mouthTimeline: createTestMouthTimeline(),
+      openingDurationSeconds,
     };
   }
   try {
     return await synthesizeSpeech({ ...payload, text: payload.text.trim() })
-      .then(({ audio, subtitles, mouthTimeline }) => ({ generated: true, audio, subtitles, mouthTimeline }));
+      .then(({ audio, subtitles, mouthTimeline, openingDurationSeconds }) => ({
+        generated: true,
+        audio,
+        subtitles,
+        mouthTimeline,
+        openingDurationSeconds,
+      }));
   } catch (error) {
     return {
       generated: false,
@@ -678,6 +707,8 @@ ipcMain.handle('voicevox:save-chapter-audio', async (event, payload = {}) => {
     || !(payload.audio instanceof Uint8Array)
     || payload.audio.byteLength > 50 * 1024 * 1024
     || typeof payload.narration !== 'string'
+    || typeof payload.openingText !== 'string'
+    || !Number.isFinite(payload.openingDurationSeconds)
     || typeof payload.speakerName !== 'string'
     || payload.speakerName.trim().length === 0
     || payload.speakerName.length > 100
@@ -687,6 +718,8 @@ ipcMain.handle('voicevox:save-chapter-audio', async (event, payload = {}) => {
   try {
     const audioAsset = await saveChapterAudio(projectDirectory, payload.chapterIndex, payload.audio, {
       durationSeconds: payload.durationSeconds,
+      openingText: payload.openingText,
+      openingDurationSeconds: payload.openingDurationSeconds,
       styleId: payload.styleId,
       narration: payload.narration,
       speakerName: payload.speakerName,
@@ -714,7 +747,7 @@ ipcMain.handle('subtitle:export-srt', async (event, payload = {}) => {
   }
   let contents;
   try {
-    contents = formatSrt(payload.subtitles);
+    contents = formatSrt(offsetSubtitlesForVideo(payload.subtitles));
   } catch (error) {
     return { saved: false, message: error instanceof Error ? error.message : '字幕を確認してください。' };
   }
@@ -961,6 +994,37 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+ipcMain.handle('scenario:prepare-new-project', async (event) => {
+  if (activeProjectDirectories.has(event.sender.id)) {
+    return { prepared: true, newProject: false, message: '既存プロジェクトの保存先を使用します。' };
+  }
+
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const selected = await dialog.showOpenDialog(owner, {
+    title: '新規プロジェクトの保存先を選択',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (selected.canceled || selected.filePaths.length === 0) {
+    return { prepared: false, cancelled: true, message: '保存先の選択をキャンセルしました。新規プロジェクトの作成を中止しました。' };
+  }
+
+  const projectDirectory = selected.filePaths[0];
+  try {
+    await fs.access(path.join(projectDirectory, 'project.json'));
+    return {
+      prepared: false,
+      message: '選択したフォルダーには既存プロジェクトがあります。既存プロジェクトを開くか、別の保存先を選んでください。',
+    };
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      return { prepared: false, message: '選択した保存先を確認できません。別のフォルダーを選んでください。' };
+    }
+  }
+
+  activeProjectDirectories.set(event.sender.id, projectDirectory);
+  return { prepared: true, newProject: true, message: '新規プロジェクトの保存先を設定しました。' };
+});
+
 ipcMain.handle('scenario:save', async (event, payload = {}) => {
   const { ScenarioDraftSchema, ScenarioRequestSchema } = await import('../src/scenario.ts');
   const requestResult = ScenarioRequestSchema.safeParse(payload?.request);
@@ -970,36 +1034,39 @@ ipcMain.handle('scenario:save', async (event, payload = {}) => {
   }
 
   const owner = BrowserWindow.fromWebContents(event.sender);
-  const selected = await dialog.showOpenDialog(owner, {
-    title: 'プロジェクトの保存先を選択',
-    properties: ['openDirectory', 'createDirectory'],
-  });
-  if (selected.canceled || selected.filePaths.length === 0) {
-    return { saved: false, cancelled: true, message: '保存をキャンセルしました。確認済みの内容は保持されています。' };
-  }
-
-  const projectPath = path.join(selected.filePaths[0], 'project.json');
-  try {
-    await fs.access(projectPath);
-    const decision = await dialog.showMessageBox(owner, {
-      type: 'warning',
-      buttons: ['上書き保存', 'キャンセル'],
-      defaultId: 1,
-      cancelId: 1,
-      message: '選択したフォルダーには既にproject.jsonがあります。上書きしますか？',
+  let projectDirectory = activeProjectDirectories.get(event.sender.id);
+  if (!projectDirectory) {
+    const selected = await dialog.showOpenDialog(owner, {
+      title: 'プロジェクトの保存先を選択',
+      properties: ['openDirectory', 'createDirectory'],
     });
-    if (decision.response !== 0) {
-      return { saved: false, cancelled: true, message: '上書きをキャンセルしました。確認済みの内容は保持されています。' };
+    if (selected.canceled || selected.filePaths.length === 0) {
+      return { saved: false, cancelled: true, message: '保存をキャンセルしました。確認済みの内容は保持されています。' };
     }
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      return { saved: false, message: '保存先を確認できません。別のフォルダーを選んでください。' };
+
+    projectDirectory = selected.filePaths[0];
+    try {
+      await fs.access(path.join(projectDirectory, 'project.json'));
+      const decision = await dialog.showMessageBox(owner, {
+        type: 'warning',
+        buttons: ['上書き保存', 'キャンセル'],
+        defaultId: 1,
+        cancelId: 1,
+        message: '選択したフォルダーには既にproject.jsonがあります。上書きしますか？',
+      });
+      if (decision.response !== 0) {
+        return { saved: false, cancelled: true, message: '上書きをキャンセルしました。確認済みの内容は保持されています。' };
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        return { saved: false, message: '保存先を確認できません。別のフォルダーを選んでください。' };
+      }
     }
   }
 
   try {
-    const savedPath = await saveScenarioProject(selected.filePaths[0], requestResult.data, draftResult.data);
-    activeProjectDirectories.set(event.sender.id, selected.filePaths[0]);
+    const savedPath = await saveScenarioProject(projectDirectory, requestResult.data, draftResult.data);
+    activeProjectDirectories.set(event.sender.id, projectDirectory);
     return { saved: true, path: savedPath, message: 'プロジェクトを保存しました。' };
   } catch {
     return {
@@ -1010,11 +1077,6 @@ ipcMain.handle('scenario:save', async (event, payload = {}) => {
 });
 
 ipcMain.handle('scenario:auto-save', async (event, payload = {}) => {
-  const projectDirectory = activeProjectDirectories.get(event.sender.id);
-  if (!projectDirectory) {
-    return { saved: false, unavailable: true, message: '自動保存先がありません。先にプロジェクトを保存してください。' };
-  }
-
   const { ScenarioDraftSchema, ScenarioRequestSchema } = await import('../src/scenario.ts');
   const requestResult = ScenarioRequestSchema.safeParse(payload?.request);
   const draftResult = ScenarioDraftSchema.safeParse(payload?.draft);
@@ -1022,8 +1084,40 @@ ipcMain.handle('scenario:auto-save', async (event, payload = {}) => {
     return { saved: false, invalid: true, message: '入力が未完成のため自動保存できません。必須項目を確認してください。' };
   }
 
+  let projectDirectory = activeProjectDirectories.get(event.sender.id);
+  if (!projectDirectory) {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const selected = await dialog.showOpenDialog(owner, {
+      title: '新規プロジェクトの保存先を選択',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (selected.canceled || selected.filePaths.length === 0) {
+      return { saved: false, unavailable: true, cancelled: true, message: '保存先の選択をキャンセルしました。編集内容は画面に保持されています。' };
+    }
+
+    projectDirectory = selected.filePaths[0];
+    try {
+      await fs.access(path.join(projectDirectory, 'project.json'));
+      const decision = await dialog.showMessageBox(owner, {
+        type: 'warning',
+        buttons: ['上書き保存', 'キャンセル'],
+        defaultId: 1,
+        cancelId: 1,
+        message: '選択したフォルダーには既にproject.jsonがあります。上書きしますか？',
+      });
+      if (decision.response !== 0) {
+        return { saved: false, unavailable: true, cancelled: true, message: '上書き保存をキャンセルしました。編集内容は画面に保持されています。' };
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        return { saved: false, unavailable: true, message: '保存先を確認できません。別のフォルダーを選んでください。' };
+      }
+    }
+  }
+
   try {
     const savedPath = await saveScenarioProject(projectDirectory, requestResult.data, draftResult.data);
+    activeProjectDirectories.set(event.sender.id, projectDirectory);
     return { saved: true, path: savedPath, message: '自動保存しました。' };
   } catch {
     return { saved: false, message: '自動保存に失敗しました。保存先の権限と空き容量を確認してください。' };
