@@ -38,6 +38,33 @@ const VIDEO_INTRO_SILENCE_SECONDS = 2;
 const VIDEO_FINAL_HOLD_SECONDS = 3;
 app.setPath('userData', path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'CVideoToolSpike'));
 
+function getLastProjectDirectorySettingsPath() {
+  return path.join(app.getPath('userData'), 'last-project-directory.txt');
+}
+
+async function getProjectDialogInitialDirectory() {
+  try {
+    const directory = (await fs.readFile(getLastProjectDirectorySettingsPath(), 'utf8')).trim();
+    if (directory && (await fs.stat(directory)).isDirectory()) return directory;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.error('Could not read the last project directory setting.', error);
+  }
+  return app.getPath('documents');
+}
+
+async function rememberProjectDirectory(directory) {
+  const settingsPath = getLastProjectDirectorySettingsPath();
+  const temporaryPath = `${settingsPath}.${randomUUID()}.tmp`;
+  try {
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    await fs.writeFile(temporaryPath, directory, 'utf8');
+    await fs.rename(temporaryPath, settingsPath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    console.error('Could not save the last project directory setting.', error);
+  }
+}
+
 function offsetSubtitlesForVideo(subtitles) {
   return subtitles.map((subtitle) => ({
     ...subtitle,
@@ -1113,6 +1140,7 @@ ipcMain.handle('scenario:prepare-new-project', async (event) => {
   const selected = await dialog.showOpenDialog(owner, {
     title: '新規プロジェクトの保存先を選択',
     properties: ['openDirectory', 'createDirectory'],
+    defaultPath: await getProjectDialogInitialDirectory(),
   });
   if (selected.canceled || selected.filePaths.length === 0) {
     return { prepared: false, cancelled: true, message: '保存先の選択をキャンセルしました。新規プロジェクトの作成を中止しました。' };
@@ -1132,6 +1160,7 @@ ipcMain.handle('scenario:prepare-new-project', async (event) => {
   }
 
   activeProjectDirectories.set(event.sender.id, projectDirectory);
+  await rememberProjectDirectory(projectDirectory);
   return { prepared: true, newProject: true, message: '新規プロジェクトの保存先を設定しました。' };
 });
 
@@ -1149,6 +1178,7 @@ ipcMain.handle('scenario:save', async (event, payload = {}) => {
     const selected = await dialog.showOpenDialog(owner, {
       title: 'プロジェクトの保存先を選択',
       properties: ['openDirectory', 'createDirectory'],
+      defaultPath: await getProjectDialogInitialDirectory(),
     });
     if (selected.canceled || selected.filePaths.length === 0) {
       return { saved: false, cancelled: true, message: '保存をキャンセルしました。確認済みの内容は保持されています。' };
@@ -1177,6 +1207,7 @@ ipcMain.handle('scenario:save', async (event, payload = {}) => {
   try {
     const savedPath = await saveScenarioProject(projectDirectory, requestResult.data, draftResult.data);
     activeProjectDirectories.set(event.sender.id, projectDirectory);
+    await rememberProjectDirectory(projectDirectory);
     return { saved: true, path: savedPath, message: 'プロジェクトを保存しました。' };
   } catch {
     return {
@@ -1200,6 +1231,7 @@ ipcMain.handle('scenario:auto-save', async (event, payload = {}) => {
     const selected = await dialog.showOpenDialog(owner, {
       title: '新規プロジェクトの保存先を選択',
       properties: ['openDirectory', 'createDirectory'],
+      defaultPath: await getProjectDialogInitialDirectory(),
     });
     if (selected.canceled || selected.filePaths.length === 0) {
       return { saved: false, unavailable: true, cancelled: true, message: '保存先の選択をキャンセルしました。編集内容は画面に保持されています。' };
@@ -1228,6 +1260,7 @@ ipcMain.handle('scenario:auto-save', async (event, payload = {}) => {
   try {
     const savedPath = await saveScenarioProject(projectDirectory, requestResult.data, draftResult.data);
     activeProjectDirectories.set(event.sender.id, projectDirectory);
+    await rememberProjectDirectory(projectDirectory);
     return { saved: true, path: savedPath, message: '自動保存しました。' };
   } catch {
     return { saved: false, message: '自動保存に失敗しました。保存先の権限と空き容量を確認してください。' };
@@ -1289,6 +1322,7 @@ ipcMain.handle('scenario:open', async (event) => {
   const selected = await dialog.showOpenDialog(owner, {
     title: 'プロジェクトを開く',
     properties: ['openDirectory'],
+    defaultPath: await getProjectDialogInitialDirectory(),
   });
   if (selected.canceled || selected.filePaths.length === 0) {
     return { opened: false, cancelled: true, message: 'プロジェクトを開く操作をキャンセルしました。' };
@@ -1303,6 +1337,7 @@ ipcMain.handle('scenario:open', async (event) => {
       return { opened: false, message: 'プロジェクトの内容が現在のシナリオ形式に合いません。' };
     }
     activeProjectDirectories.set(event.sender.id, selected.filePaths[0]);
+    await rememberProjectDirectory(selected.filePaths[0]);
     return {
       opened: true,
       request: requestResult.data,

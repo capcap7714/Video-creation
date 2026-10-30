@@ -562,10 +562,32 @@ async function main() {
       });
       window = await app.firstWindow();
       await window.waitForLoadState('load');
+      await app.evaluate(({ dialog }) => {
+        dialog.showOpenDialog = async (_owner, options) => {
+          globalThis.__cvideoLastOpenDialogDefaultPath = options.defaultPath;
+          return { canceled: true, filePaths: [] };
+        };
+      });
+      const prepareResult = await window.evaluate(() => window.scenarioApi.prepareNewProject());
+      assert.equal(prepareResult.prepared, false);
+      assert.equal(prepareResult.cancelled, true);
+      assert.equal(
+        await app.evaluate(() => globalThis.__cvideoLastOpenDialogDefaultPath),
+        projectDirectory,
+        'the new-project destination dialog should start in the last generated project folder after restart',
+      );
       await app.evaluate(({ dialog }, selectedPath) => {
-        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
+        dialog.showOpenDialog = async (_owner, options) => {
+          globalThis.__cvideoLastOpenDialogDefaultPath = options.defaultPath;
+          return { canceled: false, filePaths: [selectedPath] };
+        };
       }, projectDirectory);
       await window.locator('#scenario-open-button').click();
+      assert.equal(
+        await app.evaluate(() => globalThis.__cvideoLastOpenDialogDefaultPath),
+        projectDirectory,
+        'the open-project dialog should start in the last generated project folder after restart',
+      );
       await window.getByText('再確認が必要', { exact: true }).waitFor({ timeout: 30_000 });
       assert.equal(await window.locator('#scenario-title').inputValue(), request.title);
       assert.equal(await window.locator('#scenario-creation-mode-automatic').isChecked(), true);
