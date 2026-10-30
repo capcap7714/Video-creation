@@ -2933,9 +2933,10 @@ scenarioForm.addEventListener('submit', async (event) => {
 
   scenarioGenerateButton.disabled = true;
   scenarioConfirmButton.disabled = true;
-  scenarioMessage.textContent = scenarioAiProvider === 'company-api'
+  const generationMessage = scenarioAiProvider === 'company-api'
     ? '会社APIでシナリオを生成しています...'
     : 'Copilot SDKでシナリオを生成しています...';
+  scenarioMessage.textContent = generationMessage;
   scenarioReviewState.textContent = '生成中';
   try {
     scenarioMessage.textContent = '新規プロジェクトの保存先を確認しています...';
@@ -2946,6 +2947,7 @@ scenarioForm.addEventListener('submit', async (event) => {
       scenarioMessage.textContent = preparation.message ?? '保存先を設定できませんでした。';
       return;
     }
+    scenarioMessage.textContent = generationMessage;
     const outcome = await window.scenarioApi.generate(inputResult.data, scenarioDraft);
     if (outcome.status === 'failed') {
       scenarioDraft = outcome.draft;

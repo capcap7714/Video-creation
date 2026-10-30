@@ -1038,7 +1038,13 @@ ipcMain.handle('scenario:generate', async (_event, payload = {}) => {
       });
       const testClient = {
         createSession: async () => ({
-          sendAndWait: async () => generatedDraft,
+          sendAndWait: async () => {
+            const delayMs = Number(process.env.CVIDEO_TEST_SCENARIO_GENERATION_DELAY_MS);
+            if (Number.isSafeInteger(delayMs) && delayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+            return generatedDraft;
+          },
           disconnect: async () => {},
         }),
       };

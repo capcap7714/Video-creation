@@ -239,6 +239,7 @@ async function main() {
           ? {
           NODE_ENV: 'test',
           CVIDEO_TEST_SCENARIO_SUCCESS: withScenarioReviewFixture || withNewProjectFlowFixture ? '1' : '0',
+          CVIDEO_TEST_SCENARIO_GENERATION_DELAY_MS: withNewProjectFlowFixture ? '1200' : '0',
           CVIDEO_TEST_SCENARIO_FAILURE: withRateLimitFixture ? 'rate-limit' : withFailureFixture ? 'network' : '',
           CVIDEO_TEST_COMPANY_API_MODE: withAiProviderSettings ? 'success' : '',
           CVIDEO_TEST_GCC_MISSING: withCRunnerFixture ? '1' : '0',
@@ -504,12 +505,19 @@ async function main() {
         dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
       }, projectDirectory);
       await window.locator('#scenario-generate-button').click();
+      await window.getByText('Copilot SDKでシナリオを生成しています...', { exact: true }).waitFor({ timeout: 5000 });
+      await window.waitForTimeout(300);
+      assert.equal(
+        await window.locator('#scenario-message').innerText(),
+        'Copilot SDKでシナリオを生成しています...',
+        'the save-location status should be replaced while scenario generation is in progress',
+      );
       await window.getByText('確認待ち', { exact: true }).waitFor({ timeout: 30_000 });
       assert.equal(await window.locator('#scenario-editor fieldset').count(), 1);
       assert.equal(await window.locator('#scenario-save-button').isDisabled(), true);
       assert.equal(await window.locator('#chapter-workflow').isVisible(), true);
       assert.match(await window.locator('#chapter-workflow-status').innerText(), /章の内容を確認してください/);
-      assert.match(await window.locator('.narration-timing-status').first().innerText(), /本文 \d+文字・推定 \d+\.\d+秒/u);
+      assert.match(await window.locator('.narration-timing-status').first().innerText(), /本文 \d+文字・(?:冒頭挨拶を含む)?推定 \d+\.\d+秒/u);
       assert.match(await window.locator('.narration-timing-status').first().innerText(), /目標 3分 \/ 本文目安 720〜1080文字/u);
       await window.locator('#chapter-add-button').click();
       assert.deepEqual(await window.locator('.chapter-title').evaluateAll((inputs) => inputs.map((input) => input.value)), [
