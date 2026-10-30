@@ -33,7 +33,7 @@ function createVideoEncoder({
     '-map', '0:v:0', '-map', '1:a:0', '-map', '2:s:0',
     '-t', totalDurationSeconds.toFixed(3),
     '-vf', 'format=yuv420p',
-    '-af', 'adelay=delays=3000:all=1,apad=pad_dur=6',
+    '-af', 'adelay=delays=2000:all=1,apad=pad_dur=6',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
     '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
     '-c:s', 'mov_text', '-movflags', '+faststart',

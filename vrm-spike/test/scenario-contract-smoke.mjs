@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import projectStore from '../electron/project-store.cjs';
@@ -312,6 +313,11 @@ try {
   testWav.writeUInt32LE(testWav.length - 8, 4);
   testWav.write('WAVEfmt ', 8);
   testWav.write('data', 36);
+  const testPronunciationRules = {
+    int: 'いんと',
+    printf: 'ぷりんとえふ',
+    size_t: 'サイズティー',
+  };
   const audioAsset = await projectStore.saveChapterAudio(projectDirectory, 0, testWav, {
     durationSeconds: 1,
     openingText: `こんにちは。今日は${draft.chapters[0].title}について勉強します。`,
@@ -322,28 +328,45 @@ try {
       { start: 0.1, end: 0.2, expression: 'aa' },
       { start: 0.3, end: 0.4, expression: 'ih' },
     ],
+    pronunciationRules: testPronunciationRules,
   });
   assert.equal(audioAsset.path, 'audio/narration.wav');
   assert.match(audioAsset.narrationHash, /^[a-f0-9]{64}$/);
-  const savedAudio = await projectStore.loadChapterAudio(projectDirectory, 0);
+  const savedAudio = await projectStore.loadChapterAudio(projectDirectory, 0, testPronunciationRules);
   assert.deepEqual([...savedAudio.audio], [...testWav]);
   assert.deepEqual(savedAudio.audioAsset, audioAsset);
+  assert.equal(
+    await projectStore.loadChapterAudio(projectDirectory, 0),
+    null,
+    'audio should be stale when the app-wide pronunciation dictionary changes',
+  );
   const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
   const changedChapter = JSON.parse(await fs.readFile(chapterPath, 'utf8'));
   const originalChapterTitle = changedChapter.title;
   const legacyAudioChapter = structuredClone(changedChapter);
-  delete legacyAudioChapter.audioAsset.mouthTimeline;
+  legacyAudioChapter.audioAsset.narrationHash = createHash('sha256')
+    .update(`こんにちは。今日は${changedChapter.title}について勉強します。${changedChapter.narration}`, 'utf8')
+    .digest('hex');
   await fs.writeFile(chapterPath, JSON.stringify(legacyAudioChapter), 'utf8');
-  assert.deepEqual((await projectStore.loadChapterAudio(projectDirectory, 0)).audioAsset.mouthTimeline, [], 'legacy audio assets should default to closed-mouth timing');
+  assert.equal(
+    await projectStore.loadChapterAudio(projectDirectory, 0),
+    null,
+    'audio generated without pronunciation rules should be stale',
+  );
+  await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
+  const legacyMouthAudioChapter = structuredClone(changedChapter);
+  delete legacyMouthAudioChapter.audioAsset.mouthTimeline;
+  await fs.writeFile(chapterPath, JSON.stringify(legacyMouthAudioChapter), 'utf8');
+  assert.deepEqual((await projectStore.loadChapterAudio(projectDirectory, 0, testPronunciationRules)).audioAsset.mouthTimeline, [], 'legacy audio assets should default to closed-mouth timing');
   await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
   changedChapter.title += '変更';
   await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
-  assert.equal(await projectStore.loadChapterAudio(projectDirectory, 0), null, 'audio should be stale when the chapter title changes');
+  assert.equal(await projectStore.loadChapterAudio(projectDirectory, 0, testPronunciationRules), null, 'audio should be stale when the chapter title changes');
   changedChapter.title = originalChapterTitle;
   await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
   changedChapter.narration += '本文変更';
   await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
-  assert.equal(await projectStore.loadChapterAudio(projectDirectory, 0), null, 'audio should be stale when narration changes');
+  assert.equal(await projectStore.loadChapterAudio(projectDirectory, 0, testPronunciationRules), null, 'audio should be stale when narration changes');
   await assert.rejects(projectStore.saveChapterAudio(projectDirectory, 12, testWav, {
     durationSeconds: 1,
     styleId: 2,

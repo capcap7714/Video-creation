@@ -29,6 +29,8 @@
             <option value="company-api">会社API</option>
           </select>
           <output id="scenario-ai-provider-status" role="status" aria-live="polite">設定を読み込み中</output>
+          <button id="pronunciation-settings-button" type="button" disabled>読み替え辞書を設定</button>
+          <output id="pronunciation-settings-status" role="status" aria-live="polite">辞書設定を読み込み中</output>
           <div class="scenario-api-key-controls">
             <label for="scenario-api-key">会社APIキー</label>
             <input id="scenario-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" aria-label="会社APIキー" />
@@ -164,7 +166,9 @@
 
       <section class="stage" aria-label="1920×1080 動画プレビュー">
         <canvas id="render-canvas" width="1920" height="1080"></canvas>
+        <h2 id="video-chapter-title-preview" class="video-chapter-title-preview" hidden></h2>
         <pre id="video-code-preview" class="video-code-preview" hidden></pre>
+        <div id="video-result-heading" class="video-result-heading" hidden>実行結果</div>
         <pre id="video-result-preview" class="video-result-preview" hidden></pre>
         <div id="subtitle-preview" class="subtitle-preview" aria-label="字幕プレビュー" aria-live="polite" hidden></div>
         <section id="credit-preview" class="credit-preview" aria-label="動画末尾のクレジット" hidden>
@@ -197,6 +201,25 @@
         <div class="material-terms-actions">
           <button id="material-terms-cancel" value="cancel">選択しない</button>
           <button id="material-terms-approve" value="approve" disabled>確認済みとして利用</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="pronunciation-settings-dialog" aria-labelledby="pronunciation-settings-heading">
+      <form id="pronunciation-settings-form" class="pronunciation-settings-form">
+        <h2 id="pronunciation-settings-heading">読み替え辞書（アプリ共通）</h2>
+        <p>英字や日本語などの語句と読みを設定します。音声と字幕の表示時刻に適用し、字幕の文字は元の表記を保ちます。</p>
+        <div class="pronunciation-rule-heading" aria-hidden="true">
+          <span>読み替え前（語句）</span>
+          <span>読み</span>
+        </div>
+        <div id="pronunciation-rule-list" class="pronunciation-rule-list"></div>
+        <div class="pronunciation-settings-actions">
+          <button id="pronunciation-rule-add" type="button">読み替えを追加</button>
+          <output id="pronunciation-settings-dialog-status" role="status" aria-live="polite"></output>
+        </div>
+        <div class="pronunciation-settings-actions">
+          <button id="pronunciation-settings-cancel" type="button">キャンセル</button>
+          <button id="pronunciation-settings-save" type="submit">保存</button>
         </div>
       </form>
     </dialog>

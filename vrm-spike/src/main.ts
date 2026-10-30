@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRM, VRMLoaderPlugin } from '@pixiv/three-vrm';
 import { createVRMAnimationClip, VRMAnimation, VRMAnimationLoaderPlugin } from '@pixiv/three-vrm-animation';
 import { zipSync } from 'fflate';
+import pronunciationRules from './pronunciation-rules.json';
 import {
   checkChapterTimeline,
   estimateNarrationDurationSeconds,
@@ -18,6 +19,11 @@ import {
   type ScenarioGenerationOutcome,
   type ScenarioRequest,
 } from './scenario';
+
+type PronunciationRules = Record<string, string>;
+let currentPronunciationRules: PronunciationRules = canonicalizePronunciationRules(pronunciationRules);
+let currentPronunciationRulesSignature = JSON.stringify(currentPronunciationRules);
+let pronunciationSettingsReady = false;
 
 declare global {
   interface Window {
@@ -99,12 +105,25 @@ declare global {
         speakers: { name: string; styles: { name: string; id: number }[] }[];
         message?: string;
       }>;
+      getPronunciationRules: () => Promise<{
+        loaded: boolean;
+        rules?: PronunciationRules;
+        signature?: string;
+        message?: string;
+      }>;
+      setPronunciationRules: (rules: PronunciationRules) => Promise<{
+        saved: boolean;
+        rules?: PronunciationRules;
+        signature?: string;
+        message?: string;
+      }>;
       synthesize: (text: string, styleId: number, openingText?: string) => Promise<{
         generated: boolean;
         audio?: Uint8Array;
         subtitles?: { startSeconds: number; endSeconds: number; text: string }[];
         mouthTimeline?: { start: number; end: number; expression: string }[];
         openingDurationSeconds?: number;
+        pronunciationRulesSignature?: string;
         message?: string;
       }>;
       saveChapterAudio: (
@@ -117,6 +136,7 @@ declare global {
         narration: string,
         speakerName: string,
         mouthTimeline: { start: number; end: number; expression: string }[],
+        pronunciationRulesSignature: string,
       ) => Promise<{
         saved: boolean;
         audioAsset?: ScenarioDraft['chapters'][number]['audioAsset'];
@@ -125,6 +145,7 @@ declare global {
       loadChapterAudio: (chapterIndex: number) => Promise<{
         audioAsset: NonNullable<ScenarioDraft['chapters'][number]['audioAsset']>;
         audio: Uint8Array;
+        pronunciationRulesSignature: string;
       } | null>;
     };
     videoApi?: {
@@ -160,7 +181,7 @@ const videoFrameCanvas = document.createElement('canvas');
 videoFrameCanvas.width = 1920;
 videoFrameCanvas.height = 1080;
 const DEFAULT_EXECUTION_AT_SECONDS = 2;
-const DEFAULT_VIDEO_INTRO_SECONDS = 3;
+const DEFAULT_VIDEO_INTRO_SECONDS = 2;
 function getChapterOpeningText(title: string) {
   return `こんにちは。今日は${title.trim()}について勉強します。`;
 }
@@ -249,8 +270,10 @@ const diagnosticCopyStatus = document.querySelector<HTMLOutputElement>('#diagnos
 const runtimeStatus = document.querySelector<HTMLElement>('#runtime-status')!;
 const modelReadout = document.querySelector<HTMLElement>('#model-readout')!;
 const mouthReadout = document.querySelector<HTMLElement>('#mouth-readout')!;
+const videoChapterTitlePreview = document.querySelector<HTMLElement>('#video-chapter-title-preview')!;
 const videoCodePreview = document.querySelector<HTMLPreElement>('#video-code-preview')!;
 videoCodePreview.style.backgroundImage = `url("${blackboardImage.src}")`;
+const videoResultHeading = document.querySelector<HTMLElement>('#video-result-heading')!;
 const videoResultPreview = document.querySelector<HTMLPreElement>('#video-result-preview')!;
 const subtitlePreview = document.querySelector<HTMLElement>('#subtitle-preview')!;
 const creditPreview = document.querySelector<HTMLElement>('#credit-preview')!;
@@ -261,6 +284,15 @@ const emptyState = document.querySelector<HTMLElement>('#empty-state')!;
 const scenarioForm = document.querySelector<HTMLFormElement>('#scenario-request-form')!;
 const scenarioEditor = document.querySelector<HTMLDivElement>('#scenario-editor')!;
 const scenarioAiProviderSelect = document.querySelector<HTMLSelectElement>('#scenario-ai-provider')!;
+const pronunciationSettingsButton = document.querySelector<HTMLButtonElement>('#pronunciation-settings-button')!;
+const pronunciationSettingsStatus = document.querySelector<HTMLOutputElement>('#pronunciation-settings-status')!;
+const pronunciationSettingsDialog = document.querySelector<HTMLDialogElement>('#pronunciation-settings-dialog')!;
+const pronunciationSettingsForm = document.querySelector<HTMLFormElement>('#pronunciation-settings-form')!;
+const pronunciationRuleList = document.querySelector<HTMLDivElement>('#pronunciation-rule-list')!;
+const pronunciationRuleAddButton = document.querySelector<HTMLButtonElement>('#pronunciation-rule-add')!;
+const pronunciationSettingsDialogStatus = document.querySelector<HTMLOutputElement>('#pronunciation-settings-dialog-status')!;
+const pronunciationSettingsSaveButton = document.querySelector<HTMLButtonElement>('#pronunciation-settings-save')!;
+const pronunciationSettingsCancelButton = document.querySelector<HTMLButtonElement>('#pronunciation-settings-cancel')!;
 
 function requestMaterialTermsConfirmation(kind: string, name: string) {
   materialTermsDescription.textContent = `${kind}「${name}」の利用条件を確認してください。社内共有または動画利用が許可されていない場合や、条件を確認できない場合は「選択しない」を選んでください。`;
@@ -280,6 +312,7 @@ function isVoiceStyleApproved(styleId = voicevoxStyle.value) {
 
 function getChapterAudioGenerationBlocker(narration: HTMLTextAreaElement | null, title: HTMLInputElement | null) {
   if (!window.voicevoxApi) return 'Electronアプリ内で利用できます。';
+  if (!pronunciationSettingsReady) return '読み替え辞書設定を読み込んでください。';
   if (!confirmedScenario) return '内容を確認してから章音声を生成してください。';
   if (voicevoxStyle.disabled) return 'VOICEVOX Engineを起動し、「話者一覧を取得」してください。';
   if (!voicevoxStyle.value || !Number.isSafeInteger(Number(voicevoxStyle.value))) return '話者・スタイルを選択してください。';
@@ -292,7 +325,7 @@ function getChapterAudioGenerationBlocker(narration: HTMLTextAreaElement | null,
 }
 
 function refreshVoiceGenerationControls() {
-  const voiceAvailable = !voicevoxStyle.disabled && isVoiceStyleApproved();
+  const voiceAvailable = pronunciationSettingsReady && !voicevoxStyle.disabled && isVoiceStyleApproved();
   voicevoxGenerateButton.disabled = !voiceAvailable;
   for (const button of scenarioEditor.querySelectorAll<HTMLButtonElement>('.chapter-audio-generate')) {
     const chapter = button.closest('fieldset');
@@ -496,6 +529,157 @@ async function loadScenarioAiProvider() {
   }
 }
 
+function canonicalizePronunciationRules(rules: PronunciationRules): PronunciationRules {
+  return Object.fromEntries(Object.entries(rules).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0));
+}
+
+function renderPronunciationRuleRows(rules: PronunciationRules) {
+  pronunciationRuleList.replaceChildren();
+  for (const [term, reading] of Object.entries(rules)) {
+    appendPronunciationRuleRow(term, reading);
+  }
+}
+
+function notifyPronunciationRulesChanged() {
+  for (const chapter of scenarioEditor.querySelectorAll<HTMLFieldSetElement>(':scope > fieldset')) {
+    chapter.dispatchEvent(new Event('pronunciation-rules-changed'));
+  }
+}
+
+function appendPronunciationRuleRow(term = '', reading = '') {
+  const row = document.createElement('div');
+  row.className = 'pronunciation-rule-row';
+  const termLabel = document.createElement('label');
+  termLabel.textContent = '読み替え前';
+  const termInput = document.createElement('input');
+  termInput.className = 'pronunciation-rule-term';
+  termInput.required = true;
+  termInput.maxLength = 80;
+  termInput.autocomplete = 'off';
+  termInput.spellcheck = false;
+  termInput.value = term;
+  termLabel.append(termInput);
+  const readingLabel = document.createElement('label');
+  readingLabel.textContent = '読み';
+  const readingInput = document.createElement('input');
+  readingInput.className = 'pronunciation-rule-reading';
+  readingInput.required = true;
+  readingInput.maxLength = 100;
+  readingInput.autocomplete = 'off';
+  readingInput.value = reading;
+  readingLabel.append(readingInput);
+  const removeButton = document.createElement('button');
+  removeButton.type = 'button';
+  removeButton.className = 'pronunciation-rule-remove';
+  removeButton.setAttribute('aria-label', '読み替えを削除');
+  removeButton.textContent = '削除';
+  row.append(termLabel, readingLabel, removeButton);
+  pronunciationRuleList.append(row);
+  return termInput;
+}
+
+async function loadPronunciationDictionary() {
+  pronunciationSettingsButton.disabled = !window.voicevoxApi;
+  if (!window.voicevoxApi) {
+    pronunciationSettingsStatus.textContent = 'Electronアプリ内で読み替え辞書を設定できます。';
+    pronunciationSettingsStatus.dataset.state = 'error';
+    return;
+  }
+  try {
+    const result = await window.voicevoxApi.getPronunciationRules();
+    if (!result.loaded || !result.rules) throw new Error(result.message ?? '読み替え辞書設定を読み込めません。');
+    currentPronunciationRules = canonicalizePronunciationRules(result.rules);
+    currentPronunciationRulesSignature = result.signature ?? JSON.stringify(currentPronunciationRules);
+    pronunciationSettingsReady = true;
+    pronunciationSettingsStatus.textContent = `${Object.keys(currentPronunciationRules).length}件を全プロジェクト・全章に適用中`;
+    pronunciationSettingsStatus.dataset.state = 'ready';
+    renderPronunciationRuleRows(currentPronunciationRules);
+    notifyPronunciationRulesChanged();
+  } catch (error) {
+    pronunciationSettingsReady = false;
+    pronunciationSettingsStatus.textContent = error instanceof Error
+      ? error.message
+      : '読み替え辞書設定を読み込めません。';
+    pronunciationSettingsStatus.dataset.state = 'error';
+  } finally {
+    refreshVoiceGenerationControls();
+  }
+}
+
+pronunciationSettingsButton.addEventListener('click', () => {
+  renderPronunciationRuleRows(currentPronunciationRules);
+  pronunciationSettingsDialogStatus.textContent = pronunciationSettingsReady
+    ? ''
+    : '保存すると読み替え辞書設定を再作成できます。';
+  pronunciationSettingsDialogStatus.dataset.state = pronunciationSettingsReady ? '' : 'error';
+  pronunciationSettingsDialog.showModal();
+});
+
+pronunciationRuleAddButton.addEventListener('click', () => {
+  appendPronunciationRuleRow().focus();
+});
+
+pronunciationRuleList.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) return;
+  const removeButton = event.target.closest<HTMLButtonElement>('.pronunciation-rule-remove');
+  if (removeButton) removeButton.closest('.pronunciation-rule-row')?.remove();
+});
+
+pronunciationSettingsCancelButton.addEventListener('click', () => {
+  pronunciationSettingsDialog.close();
+});
+
+pronunciationSettingsForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!pronunciationSettingsForm.reportValidity()) return;
+  const rules = new Map<string, string>();
+  for (const row of pronunciationRuleList.querySelectorAll<HTMLDivElement>('.pronunciation-rule-row')) {
+    const term = row.querySelector<HTMLInputElement>('.pronunciation-rule-term')!.value.trim();
+    const reading = row.querySelector<HTMLInputElement>('.pronunciation-rule-reading')!.value.trim();
+    if (rules.has(term)) {
+      pronunciationSettingsDialogStatus.textContent = `「${term}」が重複しています。`;
+      pronunciationSettingsDialogStatus.dataset.state = 'error';
+      row.querySelector<HTMLInputElement>('.pronunciation-rule-term')!.focus();
+      return;
+    }
+    rules.set(term, reading);
+  }
+  if (rules.size > 100) {
+    pronunciationSettingsDialogStatus.textContent = '読み替え辞書は100件以内にしてください。';
+    pronunciationSettingsDialogStatus.dataset.state = 'error';
+    return;
+  }
+
+  pronunciationSettingsSaveButton.disabled = true;
+  pronunciationSettingsDialogStatus.textContent = '辞書を保存しています。';
+  pronunciationSettingsDialogStatus.dataset.state = '';
+  try {
+    const result = await window.voicevoxApi?.setPronunciationRules(
+      canonicalizePronunciationRules(Object.fromEntries(rules)),
+    );
+    if (!result?.saved || !result.rules) {
+      pronunciationSettingsDialogStatus.textContent = result?.message ?? '読み替え辞書を保存できませんでした。';
+      pronunciationSettingsDialogStatus.dataset.state = 'error';
+      return;
+    }
+    currentPronunciationRules = canonicalizePronunciationRules(result.rules);
+    currentPronunciationRulesSignature = result.signature ?? JSON.stringify(currentPronunciationRules);
+    pronunciationSettingsReady = true;
+    pronunciationSettingsStatus.textContent = `${Object.keys(currentPronunciationRules).length}件を全プロジェクト・全章に適用中`;
+    pronunciationSettingsStatus.dataset.state = 'ready';
+    pronunciationSettingsDialog.close();
+    renderPronunciationRuleRows(currentPronunciationRules);
+    notifyPronunciationRulesChanged();
+  } catch {
+    pronunciationSettingsDialogStatus.textContent = '読み替え辞書を保存できませんでした。設定フォルダーのアクセス権を確認してください。';
+    pronunciationSettingsDialogStatus.dataset.state = 'error';
+  } finally {
+    pronunciationSettingsSaveButton.disabled = false;
+    refreshVoiceGenerationControls();
+  }
+});
+
 scenarioAiProviderSelect.addEventListener('change', async () => {
   const requestedProvider = scenarioAiProviderSelect.value as 'copilot' | 'company-api';
   scenarioAiProviderSelect.disabled = true;
@@ -564,6 +748,7 @@ scenarioApiVerifyButton.addEventListener('click', async () => {
 });
 
 void loadScenarioAiProvider();
+void loadPronunciationDictionary();
 
 function updatePlaybackControls() {
   playButton.disabled = playbackLocked || playbackFrame !== null;
@@ -783,6 +968,11 @@ videoExportButton.addEventListener('click', async () => {
     videoExportStatus.textContent = '先にVRMモデルを読み込んでください。';
     return;
   }
+  if (!pronunciationSettingsReady) {
+    videoExportStatus.textContent = '読み替え辞書設定を読み込んでから書き出してください。';
+    pronunciationSettingsButton.focus();
+    return;
+  }
   const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
   const chapterIndex = [...scenarioEditor.querySelectorAll('fieldset')].indexOf(selectedChapter!);
   const codeInput = selectedChapter?.querySelector<HTMLTextAreaElement>('.chapter-code');
@@ -805,7 +995,17 @@ videoExportButton.addEventListener('click', async () => {
     return;
   }
   const audio = getSelectedChapterAudio();
-  const hasSavedAudioAsset = Boolean(selectedChapter?.querySelector<HTMLDivElement>('.chapter-audio-controls')?.dataset.audioAsset);
+  const chapterAudioControls = selectedChapter?.querySelector<HTMLDivElement>('.chapter-audio-controls');
+  const hasSavedAudioAsset = Boolean(chapterAudioControls?.dataset.audioAsset);
+  if (
+    hasSavedAudioAsset
+    && chapterAudioControls?.dataset.pronunciationRulesSignature !== currentPronunciationRulesSignature
+  ) {
+    videoExportStatus.textContent = '読み替え辞書設定が変更されています。現在の設定で章音声を再生成してください。';
+    const audioRegenerateButton = selectedChapter?.querySelector<HTMLButtonElement>('.chapter-audio-generate');
+    (audioRegenerateButton && !audioRegenerateButton.disabled ? audioRegenerateButton : pronunciationSettingsButton).focus();
+    return;
+  }
   if (!selectedChapter || chapterIndex < 0 || !hasSavedAudioAsset || !audio?.src || !Number.isFinite(audio.duration)) {
     const audioStatus = selectedChapter?.querySelector<HTMLSpanElement>('.chapter-audio-status')?.textContent ?? '';
     videoExportStatus.textContent = audioStatus.includes('変更されています')
@@ -1242,6 +1442,8 @@ function syncVideoComposition(seconds: number) {
   const showingCredit = Boolean(creditRange && seconds + 0.0001 >= creditRange.startSeconds && seconds < creditRange.endSeconds);
   const showingContent = !showingIntro && !showingOpening && !showingCredit;
   creditPreview.hidden = !showingCredit;
+  videoChapterTitlePreview.textContent = selectedChapter?.querySelector<HTMLInputElement>('.chapter-title')?.value ?? '';
+  videoChapterTitlePreview.hidden = !selectedChapter || showingCredit;
   if (showingCredit && selectedChapter) {
     creditPreviewTitle.textContent = selectedChapter.querySelector<HTMLInputElement>('.chapter-title')?.value ?? '';
     const audioAssetJson = selectedChapter.querySelector<HTMLDivElement>('.chapter-audio-controls')?.dataset.audioAsset;
@@ -1274,10 +1476,15 @@ function syncVideoComposition(seconds: number) {
     ?.querySelector<HTMLTextAreaElement>('.video-execution-result')?.value.trim() ?? '';
   const executionAtSeconds = Number(selectedChapter?.querySelector<HTMLInputElement>('.execution-time')?.value ?? DEFAULT_EXECUTION_AT_SECONDS);
   const resultAtSeconds = Math.max(executionAtSeconds, fullCodeAt);
-  videoResultPreview.textContent = showingContent && fullCodeIsVisible && contentSeconds + stageTolerance >= resultAtSeconds
-    ? executionResultText
-    : '';
-  videoResultPreview.hidden = !showingContent || videoResultPreview.textContent.length === 0;
+  const showExecutionResult = Boolean(
+    showingContent
+    && fullCodeIsVisible
+    && contentSeconds + stageTolerance >= resultAtSeconds
+    && executionResultText,
+  );
+  videoResultPreview.textContent = showExecutionResult ? executionResultText : '';
+  videoResultHeading.hidden = !showExecutionResult;
+  videoResultPreview.hidden = !showExecutionResult;
 }
 
 function drawVideoTextPanel(text: string, x: number, y: number, width: number, height: number, fontSize: number, align: CanvasTextAlign = 'left', backgroundFill: string | null = 'rgba(16, 27, 25, 0.88)') {
@@ -1316,7 +1523,25 @@ function drawVideoTextPanel(text: string, x: number, y: number, width: number, h
   });
 }
 
-async function drawVideoCodePanel(text: string, x: number, y: number, width: number, height: number) {
+async function drawVideoBoardTitle(text: string, x: number, y: number, width: number) {
+  if (!text.trim()) return;
+  videoFrameContext.save();
+  videoFrameContext.font = '600 28px "Yu Gothic UI", sans-serif';
+  videoFrameContext.fillStyle = '#f7f8ee';
+  videoFrameContext.textBaseline = 'middle';
+  videoFrameContext.textAlign = 'center';
+  const maxWidth = width - 84;
+  const characters = [...text];
+  let displayText = text;
+  while (characters.length > 1 && videoFrameContext.measureText(displayText).width > maxWidth) {
+    characters.pop();
+    displayText = `${characters.join('')}…`;
+  }
+  videoFrameContext.fillText(displayText, x + width / 2, y + 31, maxWidth);
+  videoFrameContext.restore();
+}
+
+async function drawVideoCodePanel(title: string, text: string, x: number, y: number, width: number, height: number) {
   const image = await blackboardImageReady;
   const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
   const imageWidth = image.naturalWidth * scale;
@@ -1329,7 +1554,20 @@ async function drawVideoCodePanel(text: string, x: number, y: number, width: num
   videoFrameContext.fillStyle = 'rgba(0, 16, 11, 0.10)';
   videoFrameContext.fillRect(x, y, width, height);
   videoFrameContext.restore();
-  drawVideoTextPanel(text, x + 21, y + 15, width - 21, height - 75, 22, 'left', null);
+  drawVideoBoardTitle(title, x, y, width);
+  drawVideoTextPanel(text, x + 21, y + 75, width - 21, height - 135, 24, 'left', null);
+}
+
+function drawVideoResultPanel(text: string, x: number, y: number, width: number, height: number) {
+  if (!text.trim()) return;
+  videoFrameContext.save();
+  videoFrameContext.font = '700 26px "Yu Gothic UI", sans-serif';
+  videoFrameContext.fillStyle = '#18312d';
+  videoFrameContext.textBaseline = 'top';
+  videoFrameContext.textAlign = 'left';
+  videoFrameContext.fillText('実行結果', x + 20, y - 40, width - 40);
+  videoFrameContext.restore();
+  drawVideoTextPanel(text, x, y, width, height, 20);
 }
 
 function drawCreditFrame(chapterTitle: string, creditText: string) {
@@ -1371,8 +1609,15 @@ async function createVideoFrame(frameIndex: number, contentFrames: number, chapt
       videoFrameContext.stroke();
     }
     videoFrameContext.drawImage(canvas, 0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
-    await drawVideoCodePanel(videoCodePreview.textContent ?? '', 48, 54, 1230, 900);
-    drawVideoTextPanel(videoResultPreview.textContent ?? '', 1320, 80, 552, 240, 20);
+    await drawVideoCodePanel(
+      videoChapterTitlePreview.hidden ? '' : videoChapterTitlePreview.textContent ?? '',
+      videoCodePreview.textContent ?? '',
+      48,
+      54,
+      1230,
+      900,
+    );
+    drawVideoResultPanel(videoResultPreview.textContent ?? '', 1320, 80, 552, 240);
     drawVideoTextPanel(subtitlePreview.hidden ? '' : subtitlePreview.textContent ?? '', 96, 920, 1728, 110, 40, 'center');
   }
   const blob = await new Promise<Blob>((resolve, reject) => {
@@ -1396,7 +1641,7 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     __cvideoTestGetCharacterPose?: () => { head: [number, number, number] | null; happy: number | null; blink: number | null };
     __cvideoTestGetRandomExpressionAt?: (seconds: number) => { happy: number; blink: number };
     __cvideoTestGetCharacterActionAt?: typeof getCharacterActionAt;
-    __cvideoTestReadExportText?: () => { code: string; result: string; subtitle: string };
+    __cvideoTestReadExportText?: () => { title: string; code: string; result: string; subtitle: string };
     __cvideoTestLoadScenarioDraft?: (draft: ScenarioDraft) => void;
   };
   testWindow.__cvideoTestCreateVideoFrame = createVideoFrame;
@@ -1466,6 +1711,7 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     renderScenarioDraft(scenarioDraft);
   };
   testWindow.__cvideoTestReadExportText = () => ({
+    title: videoChapterTitlePreview.hidden ? '' : videoChapterTitlePreview.textContent ?? '',
     code: videoCodePreview.textContent ?? '',
     result: videoResultPreview.textContent ?? '',
     subtitle: subtitlePreview.hidden ? '' : subtitlePreview.textContent ?? '',
@@ -1599,6 +1845,9 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     let hasStoredAudioToReplace = Boolean(chapter.audioAsset);
     let savedAudioNarration: string | null = chapter.audioAsset ? chapter.narration : null;
     let savedAudioTitle: string | null = chapter.audioAsset ? chapter.title : null;
+    let savedAudioPronunciationSignature: string | null = chapter.audioAsset
+      ? currentPronunciationRulesSignature
+      : null;
     const refreshNarrationTimingStatus = () => {
       const targetMinutes = Number(minutes.value);
       const targetSeconds = targetMinutes * 60;
@@ -1635,6 +1884,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       title: string;
       openingText: string;
       openingDurationSeconds: number;
+      pronunciationRulesSignature: string;
       styleId: number;
       subtitles: { startSeconds: number; endSeconds: number; text: string }[];
       mouthTimeline: MouthShape[];
@@ -1658,6 +1908,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       if (chapterAudioAsset || chapterAudioUrl) {
         chapterAudioAsset = null;
         delete chapterAudioControls.dataset.audioAsset;
+        delete chapterAudioControls.dataset.pronunciationRulesSignature;
         chapterAudioStatus.textContent = '読み上げ本文が変更されています。音声を再生成してください。';
       }
       refreshChapterMaterialStatus();
@@ -1669,6 +1920,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       if (chapterAudioAsset || chapterAudioUrl) {
         chapterAudioAsset = null;
         delete chapterAudioControls.dataset.audioAsset;
+        delete chapterAudioControls.dataset.pronunciationRulesSignature;
         chapterAudioStatus.textContent = '章タイトルが変更されています。冒頭の挨拶音声を再生成してください。';
       }
       refreshChapterMaterialStatus();
@@ -1691,6 +1943,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         refreshChapterMaterialStatus();
         return;
       }
+      if (pending.pronunciationRulesSignature !== currentPronunciationRulesSignature) {
+        chapterAudioStatus.textContent = '音声生成中に読み替え辞書が変更されました。現在の設定で音声を再生成してください。';
+        refreshChapterMaterialStatus();
+        return;
+      }
       const subtitleRefresh = applyGeneratedSubtitles(pending.subtitles, durationSeconds);
       if (subtitleRefresh === 'failed') {
         chapterAudioStatus.textContent = '手動字幕を新しい音声に合わせて配置できません。字幕数を減らすか、字幕を置き換えてから再生成してください。新しい音声は保存していません。';
@@ -1708,6 +1965,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           pending.narration,
           pending.speakerName,
           pending.mouthTimeline,
+          pending.pronunciationRulesSignature,
         );
         if (!result?.saved || !result.audioAsset) {
           const subtitleMessage = subtitleRefresh === 'replaced'
@@ -1721,7 +1979,9 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         hasStoredAudioToReplace = true;
         savedAudioNarration = pending.narration;
         savedAudioTitle = pending.title;
+        savedAudioPronunciationSignature = pending.pronunciationRulesSignature;
         chapterAudioControls.dataset.audioAsset = JSON.stringify(result.audioAsset);
+        chapterAudioControls.dataset.pronunciationRulesSignature = pending.pronunciationRulesSignature;
         chapterAudioControls.dataset.openingDurationSeconds = String(result.audioAsset.openingDurationSeconds);
         refreshNarrationTimingStatus();
         const subtitleMessage = subtitleRefresh === 'replaced'
@@ -1783,6 +2043,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           || typeof result.openingDurationSeconds !== 'number'
           || !Number.isFinite(result.openingDurationSeconds)
           || result.openingDurationSeconds <= 0
+          || typeof result.pronunciationRulesSignature !== 'string'
         ) {
           chapterAudioStatus.textContent = result.message ?? '章の音声を生成できませんでした。';
           return;
@@ -1793,6 +2054,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           title: chapterTitle,
           openingText,
           openingDurationSeconds: result.openingDurationSeconds,
+          pronunciationRulesSignature: result.pronunciationRulesSignature,
           styleId,
           subtitles: result.subtitles ?? [],
           mouthTimeline: (result.mouthTimeline ?? []) as MouthShape[],
@@ -2202,7 +2464,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     executionTime.disabled = !runCode.checked;
     fieldset.append(makeField('C実行結果を表示する最短時刻（読み上げ開始からの秒）', executionTime));
     const executionTimeHint = document.createElement('small');
-    executionTimeHint.textContent = '動画では冒頭3秒の無音後を基準とし、コード全体が表示された後に実行結果を表示します。';
+    executionTimeHint.textContent = '動画では冒頭2秒の無音後を基準とし、コード全体が表示された後に実行結果を表示します。';
     fieldset.append(executionTimeHint);
     executionTime.addEventListener('input', refreshTimelineExtent);
 
@@ -2215,7 +2477,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     fieldset.append(makeField('標準入力', runInput));
     const refreshChapterMaterialStatus = () => {
       const audioIsStale = savedAudioNarration !== null
-        && (narration.value.trim() !== savedAudioNarration || title.value.trim() !== savedAudioTitle);
+        && (
+          narration.value.trim() !== savedAudioNarration
+          || title.value.trim() !== savedAudioTitle
+          || savedAudioPronunciationSignature !== currentPronunciationRulesSignature
+        );
       const audioState = audioIsStale
         ? '音声: 要更新'
         : chapterAudioControls.dataset.audioAsset
@@ -2253,6 +2519,10 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     fieldset.addEventListener('change', markChapterVideoStale);
     fieldset.addEventListener('click', (event) => {
       if (event.target instanceof Element && event.target.closest('button')) markChapterVideoStale();
+    });
+    fieldset.addEventListener('pronunciation-rules-changed', () => {
+      void refreshSubtitleSourceStatus();
+      markChapterVideoStale();
     });
     refreshChapterMaterialStatus();
 
@@ -2400,6 +2670,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         if (
           !storedAudio
           || storedAudio.audioAsset.narrationHash !== chapter.audioAsset?.narrationHash
+          || storedAudio.pronunciationRulesSignature !== currentPronunciationRulesSignature
           || narration.value !== chapter.narration
           || title.value !== chapter.title
           || storedAudio.audioAsset.openingDurationSeconds <= 0
@@ -2411,6 +2682,8 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           return;
         }
         chapterAudioAsset = storedAudio.audioAsset;
+        savedAudioPronunciationSignature = storedAudio.pronunciationRulesSignature;
+        chapterAudioControls.dataset.pronunciationRulesSignature = storedAudio.pronunciationRulesSignature;
         setChapterAudioSource(storedAudio.audio);
       }).catch(() => {
         chapterAudioStatus.textContent = '保存済み音声を読み込めません。再生成してください。';
@@ -3096,7 +3369,10 @@ async function persistModelFile(file: File, contents?: ArrayBuffer): Promise<{
 }
 
 async function hashNarrationText(text: string) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${text}\0${currentPronunciationRulesSignature}`),
+  );
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
 }
 

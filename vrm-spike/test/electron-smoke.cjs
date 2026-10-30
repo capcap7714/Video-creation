@@ -66,7 +66,9 @@ const withScenarioGeneration = process.argv.includes('--with-scenario-generation
 const withScenarioReviewFixture = process.argv.includes('--with-scenario-review-fixture');
 const withNewProjectFlowFixture = process.argv.includes('--with-new-project-flow-fixture');
 const withAiProviderSettings = process.argv.includes('--with-ai-provider-settings');
+const withPronunciationSettingsFixture = process.argv.includes('--with-pronunciation-settings-fixture');
 const withProjectFixture = process.argv.includes('--with-project-fixture');
+const introSilenceSeconds = 2;
 const withProjectOpenFixture = process.argv.includes('--with-project-open-fixture');
 const withProjectModelAssetFixture = process.argv.includes('--with-project-model-asset-fixture');
 const withProjectRecoveryFixture = process.argv.includes('--with-project-recovery-fixture');
@@ -189,6 +191,7 @@ async function main() {
   let syntheticMotionFixturePath;
   let viteServer;
   let aiProviderToRestore;
+  let pronunciationRulesToRestore;
 
   try {
     if (withScenarioGeneration || withScenarioReviewFixture || withNewProjectFlowFixture || withProjectFixture || withProjectOpenFixture || withProjectModelAssetFixture || withProjectRecoveryFixture || withProjectRecoveryFailureFixture || withCorruptProjectFixture || withAutosaveFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withAudioReplacementFixture || withLiveVoicevox || withMissingSubtitleFixture) {
@@ -232,7 +235,7 @@ async function main() {
       env: {
         ...process.env,
         CVIDEO_DEV_URL: `${viteServer.url}/?cvideo_test_frame=1`,
-        ...(withScenarioReviewFixture || withNewProjectFlowFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withVoicevoxOfflineFixture || withVoicevoxEmptySpeakersFixture || withVoicevoxHttpErrorFixture || withAudioReplacementFixture || withFfmpegMissingFixture || withFfmpegAvailableFixture || withDependencySummaryFixture || withDependencySummaryLiveFixture || withMissingSubtitleFixture || withAiProviderSettings || withProjectModelAssetFixture || withMaterialEligibilityFixture
+        ...(withScenarioReviewFixture || withNewProjectFlowFixture || withFailureFixture || withRateLimitFixture || withCRunnerFixture || withCResultFixture || withCStopFixture || withCErrorFixture || withVoicevoxFixture || withPronunciationSettingsFixture || withVoicevoxOfflineFixture || withVoicevoxEmptySpeakersFixture || withVoicevoxHttpErrorFixture || withAudioReplacementFixture || withFfmpegMissingFixture || withFfmpegAvailableFixture || withDependencySummaryFixture || withDependencySummaryLiveFixture || withMissingSubtitleFixture || withAiProviderSettings || withProjectModelAssetFixture || withMaterialEligibilityFixture
           ? {
           NODE_ENV: 'test',
           CVIDEO_TEST_SCENARIO_SUCCESS: withScenarioReviewFixture || withNewProjectFlowFixture ? '1' : '0',
@@ -246,7 +249,7 @@ async function main() {
               ? 'empty-speakers'
               : withVoicevoxHttpErrorFixture
                 ? 'http-error'
-              : withVoicevoxFixture || withAudioReplacementFixture || withMissingSubtitleFixture || withMaterialEligibilityFixture ? 'speakers' : '',
+              : withVoicevoxFixture || withPronunciationSettingsFixture || withAudioReplacementFixture || withMissingSubtitleFixture || withMaterialEligibilityFixture ? 'speakers' : '',
               CVIDEO_TEST_DEPENDENCY_SUMMARY: withDependencySummaryFixture ? '1' : '0',
               CVIDEO_TEST_EXTERNAL_MODEL_PATH: externalModelPath ?? '',
           ...(withFfmpegMissingFixture ? { CVIDEO_FFMPEG_PATH: path.join(os.tmpdir(), 'cvideo-test-missing-ffmpeg.exe') } : {}),
@@ -325,6 +328,41 @@ async function main() {
     });
     assert.ok(creationModeOrder.automaticLeft < creationModeOrder.manualLeft, 'automatic creation should appear to the left of manual setup');
     console.log('Scenario preload and input-validation IPC passed');
+
+    if (withPronunciationSettingsFixture) {
+      await window.waitForFunction(() => document.querySelector('#pronunciation-settings-status')?.textContent.includes('件を全プロジェクト'));
+      const currentSettings = await window.evaluate(() => window.voicevoxApi.getPronunciationRules());
+      assert.equal(currentSettings.loaded, true);
+      pronunciationRulesToRestore = currentSettings.rules;
+      assert.equal(await window.locator('#pronunciation-settings-button').isEnabled(), true);
+      await window.locator('#pronunciation-settings-button').click();
+      await window.locator('#pronunciation-settings-dialog').waitFor({ state: 'visible' });
+      assert.deepEqual(
+        await window.locator('.pronunciation-rule-row').evaluateAll((rows) => rows.map((row) => [
+          row.querySelector('.pronunciation-rule-term').value,
+          row.querySelector('.pronunciation-rule-reading').value,
+        ])),
+        Object.entries(currentSettings.rules),
+      );
+      await window.locator('#pronunciation-rule-add').click();
+      const testTerm = `値テスト${process.pid}`;
+      await window.locator('.pronunciation-rule-term').last().fill(testTerm);
+      await window.locator('.pronunciation-rule-reading').last().fill('あたいテスト');
+      await window.locator('#pronunciation-settings-save').click();
+      await window.locator('#pronunciation-settings-dialog').waitFor({ state: 'hidden' });
+      const savedSettings = await window.evaluate(() => window.voicevoxApi.getPronunciationRules());
+      assert.equal(savedSettings.loaded, true);
+      assert.equal(savedSettings.rules[testTerm], 'あたいテスト');
+      const preview = await window.evaluate((text) => window.voicevoxApi.synthesize(text, 1), testTerm);
+      assert.equal(preview.generated, true);
+      assert.equal(preview.pronunciationRulesSignature, savedSettings.signature);
+      const invalidRules = await window.evaluate(() =>
+        window.voicevoxApi.setPronunciationRules({ '': '読み' }));
+      assert.equal(invalidRules.saved, false);
+      assert.equal((await window.evaluate(() => window.voicevoxApi.getPronunciationRules())).rules[testTerm], 'あたいテスト');
+      console.log('App-wide pronunciation dictionary settings persist, validate, and are included in VOICEVOX synthesis');
+      return;
+    }
 
     if (withMaterialEligibilityFixture) {
       const modelPath = path.resolve(__dirname, '../../C1.vrm');
@@ -1188,8 +1226,8 @@ async function main() {
         + Number(savedCue[3]) + Number(savedCue[4]) / 1000;
       const chapterCueStartSeconds = Number(await window.locator('.subtitle-start').first().inputValue());
       assert.ok(
-        Math.abs(savedCueStartSeconds - chapterCueStartSeconds - 3) <= 0.001,
-        'standalone SRT should include the three-second video intro offset',
+        Math.abs(savedCueStartSeconds - chapterCueStartSeconds - 2) <= 0.001,
+        'standalone SRT should include the two-second video intro offset',
       );
       if (await window.locator('.subtitle-row').count() > 1) {
         assert.ok(savedSrt.includes('\r\n\r\n'), 'SRT cues should be separated by a blank line');
@@ -1203,8 +1241,8 @@ async function main() {
       });
       const finalStageTime = Number(await window.locator('.code-stage-time').nth(1).inputValue());
       const firstSubtitleStart = Number(await window.locator('.subtitle-start').first().inputValue());
-      const codePreviewTime = 3 + openingDuration + finalStageTime;
-      const subtitlePreviewTime = 3 + firstSubtitleStart + 0.1;
+      const codePreviewTime = introSilenceSeconds + openingDuration + finalStageTime;
+      const subtitlePreviewTime = introSilenceSeconds + firstSubtitleStart + 0.1;
       await window.locator('#timeline').evaluate((input, seconds) => {
         input.value = String(seconds);
         input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1246,7 +1284,7 @@ async function main() {
       });
       assert.equal(Number(await window.locator('.chapter-audio').evaluate((audio) => audio.currentTime)), 0);
       await window.locator('#timeline').evaluate((input) => {
-        input.value = '3.5';
+        input.value = '2.5';
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
       assert.ok(Math.abs(Number(await window.locator('.chapter-audio').evaluate((audio) => audio.currentTime)) - 0.5) < 0.05);
@@ -1263,7 +1301,7 @@ async function main() {
         input.value = '11';
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
-      const lateStageVideoTime = 3 + openingDuration + 11;
+      const lateStageVideoTime = introSilenceSeconds + openingDuration + 11;
       assert.equal(await window.locator('#timeline').getAttribute('max'), String(lateStageVideoTime));
       await window.locator('#timeline').evaluate((input, seconds) => {
         input.value = String(seconds);
@@ -1274,7 +1312,7 @@ async function main() {
         input.value = '1';
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
-      const executionVideoTime = 3 + openingDuration + Number(await window.locator('.execution-time').inputValue());
+      const executionVideoTime = introSilenceSeconds + openingDuration + Number(await window.locator('.execution-time').inputValue());
       assert.ok(Number(await window.locator('#timeline').getAttribute('max')) >= executionVideoTime);
 
       await window.locator('#rewind-button').click();
@@ -1750,7 +1788,7 @@ async function main() {
     const modelLeftOnScreen = ((modelScreenBoundsX?.left ?? -1) + 1) / 2;
     const modelRightOnScreen = ((modelScreenBoundsX?.right ?? 1) + 1) / 2;
     assert.ok(boardLayout.width > 0.63 && boardLayout.height > 0.82, 'the blackboard should be about 1.5 times its former size');
-    assert.equal(boardLayout.fontSize, '22px', 'the code font size should remain unchanged');
+    assert.equal(boardLayout.fontSize, '24px', 'the code font size should increase one step');
     assert.ok(
       modelRightOnScreen < 1,
       `the VRM should remain inside the right edge of the frame (left: ${modelLeftOnScreen}, right: ${modelRightOnScreen})`,
@@ -1812,9 +1850,9 @@ async function main() {
       return document.querySelector('#render-canvas').toDataURL('image/png');
     }, seconds);
     if (withVoicevoxFixture) {
-      const savedAudioMouthFrame = await seekAndCapture(3.2);
+      const savedAudioMouthFrame = await seekAndCapture(introSilenceSeconds + 0.2);
       assert.equal(await window.locator('#mouth-readout').innerText(), '口形: aa', 'saved chapter audio should drive lip sync without importing JSON');
-      assert.equal(await seekAndCapture(3.2), savedAudioMouthFrame, 'saved audio mouth cues should reproduce the same frame after seeking');
+      assert.equal(await seekAndCapture(introSilenceSeconds + 0.2), savedAudioMouthFrame, 'saved audio mouth cues should reproduce the same frame after seeking');
     }
     if (withLiveVoicevox) {
       const mouthTimeline = JSON.parse(await fs.readFile(mouthTimelinePath, 'utf8'));
@@ -1828,10 +1866,10 @@ async function main() {
       const ihShape = mouthTimeline.mouthTimeline.find((entry) => entry.expression === 'ih');
       assert.ok(aaShape && ihShape, 'timeline should contain open and narrow vowel shapes');
       const aaTime = (aaShape.start + aaShape.end) / 2;
-      const aaFrame = await seekAndCapture(3 + aaTime);
+      const aaFrame = await seekAndCapture(introSilenceSeconds + aaTime);
       assert.equal(await window.locator('#mouth-readout').innerText(), '口形: aa');
-      assert.equal(await seekAndCapture(3 + aaTime), aaFrame, 'same vowel timestamp should reproduce the frame');
-      const ihFrame = await seekAndCapture(3 + (ihShape.start + ihShape.end) / 2);
+      assert.equal(await seekAndCapture(introSilenceSeconds + aaTime), aaFrame, 'same vowel timestamp should reproduce the frame');
+      const ihFrame = await seekAndCapture(introSilenceSeconds + (ihShape.start + ihShape.end) / 2);
       assert.equal(await window.locator('#mouth-readout').innerText(), '口形: ih');
       assert.notEqual(aaFrame, ihFrame, 'different vowels should render different mouth poses');
       console.log('VOICEVOX vowel timeline drives deterministic VRM mouth expressions');
@@ -1920,6 +1958,7 @@ async function main() {
           code: document.querySelector('.staged-code-preview').textContent,
           subtitle: document.querySelector('#subtitle-preview').textContent,
           mouth: document.querySelector('#mouth-readout').textContent,
+          chapterTitle: document.querySelector('#video-chapter-title-preview').textContent,
           codeOverlay: document.querySelector('#video-code-preview').textContent,
           resultOverlay: document.querySelector('#video-result-preview').textContent,
         };
@@ -1991,6 +2030,7 @@ async function main() {
       assert.deepEqual(
         exportFrameComparison.exportText,
         {
+          title: compositionAtOneSecond.chapterTitle,
           code: compositionAtOneSecond.codeOverlay,
           result: compositionAtOneSecond.resultOverlay,
           subtitle: compositionAtOneSecond.subtitle,
@@ -2032,6 +2072,10 @@ async function main() {
     if (aiProviderToRestore && app) {
       const restoreWindow = await app.firstWindow().catch(() => null);
       await restoreWindow?.evaluate((provider) => window.scenarioApi?.setAiProvider(provider), aiProviderToRestore).catch(() => {});
+    }
+    if (pronunciationRulesToRestore && app) {
+      const restoreWindow = await app.firstWindow().catch(() => null);
+      await restoreWindow?.evaluate((rules) => window.voicevoxApi?.setPronunciationRules(rules), pronunciationRulesToRestore).catch(() => {});
     }
     await app?.close();
     await stopProcess(viteServer?.server);

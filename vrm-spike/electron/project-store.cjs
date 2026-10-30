@@ -2,6 +2,10 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { createHash } = require('node:crypto');
+const {
+  defaultPronunciationRules,
+  getPronunciationRulesSignature,
+} = require('./pronunciation-rules.cjs');
 
 const MAX_AUDIO_BYTES = 50 * 1024 * 1024;
 const MAX_MODEL_BYTES = 512 * 1024 * 1024;
@@ -9,6 +13,12 @@ const PROJECT_SAVE_RECOVERY_FILE = '.project-save-recovery.json';
 
 function getOpeningText(title) {
   return `こんにちは。今日は${title}について勉強します。`;
+}
+
+function getNarrationHash(text, pronunciationRules = defaultPronunciationRules) {
+  return createHash('sha256')
+    .update(`${text}\0${getPronunciationRulesSignature(pronunciationRules)}`, 'utf8')
+    .digest('hex');
 }
 
 async function writeJsonAtomically(filePath, value) {
@@ -94,7 +104,7 @@ async function recoverInterruptedProjectSave(projectDirectory) {
   return true;
 }
 
-function getAudioAsset(fileBytes, scenario) {
+function getAudioAsset(fileBytes, scenario, pronunciationRules = defaultPronunciationRules) {
   if (
     fileBytes.length < 44
     || fileBytes.length > MAX_AUDIO_BYTES
@@ -115,9 +125,7 @@ function getAudioAsset(fileBytes, scenario) {
     || !/^[a-f0-9]{64}$/.test(audioAsset.narrationHash)
     || !isValidMouthTimeline(mouthTimeline, audioAsset.durationSeconds)
   ) return null;
-  const narrationHash = createHash('sha256')
-    .update(`${getOpeningText(scenario.title)}${scenario.narration}`, 'utf8')
-    .digest('hex');
+  const narrationHash = getNarrationHash(`${getOpeningText(scenario.title)}${scenario.narration}`, pronunciationRules);
   return narrationHash === audioAsset.narrationHash
     ? { ...audioAsset, mouthTimeline }
     : null;
@@ -427,9 +435,10 @@ async function saveChapterAudio(projectDirectory, chapterIndex, audio, details) 
     durationSeconds: details.durationSeconds,
     styleId: details.styleId,
     speakerName: details.speakerName?.trim() || '話者名未記録',
-    narrationHash: createHash('sha256')
-      .update(`${details.openingText}${details.narration}`, 'utf8')
-      .digest('hex'),
+    narrationHash: getNarrationHash(
+      `${details.openingText}${details.narration}`,
+      details.pronunciationRules ?? defaultPronunciationRules,
+    ),
     openingDurationSeconds: details.openingDurationSeconds,
     mouthTimeline: details.mouthTimeline ?? [],
   };
@@ -440,11 +449,11 @@ async function saveChapterAudio(projectDirectory, chapterIndex, audio, details) 
   return audioAsset;
 }
 
-async function loadChapterAudio(projectDirectory, chapterIndex) {
+async function loadChapterAudio(projectDirectory, chapterIndex, pronunciationRules = defaultPronunciationRules) {
   const { id, scenario } = await resolveChapterScenario(projectDirectory, chapterIndex);
   const audioPath = path.join(projectDirectory, 'chapters', id, 'audio', 'narration.wav');
   const fileBytes = await fs.readFile(audioPath);
-  const audioAsset = getAudioAsset(fileBytes, scenario);
+  const audioAsset = getAudioAsset(fileBytes, scenario, pronunciationRules);
   if (!audioAsset) return null;
   return { audioAsset, audio: new Uint8Array(fileBytes) };
 }

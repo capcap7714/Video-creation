@@ -1,4 +1,5 @@
 const API_ORIGIN = 'http://127.0.0.1:50021';
+const { createPronunciationConverter, defaultPronunciationRules } = require('./pronunciation-rules.cjs');
 const MAX_MOUTH_CUES = 10_000;
 const VOWEL_EXPRESSIONS = { a: 'aa', i: 'ih', u: 'ou', e: 'ee', o: 'oh' };
 const MAX_WAV_BYTES = 50 * 1024 * 1024;
@@ -162,10 +163,16 @@ function makePcmWav(pcm, { channels, sampleRate, bitsPerSample }) {
   return Buffer.concat([header, pcm]);
 }
 
-async function synthesizeSpeech({ text, openingText = '', styleId }, fetchImpl = fetch) {
+async function synthesizeSpeech({
+  text,
+  openingText = '',
+  styleId,
+  pronunciationRules = defaultPronunciationRules,
+}, fetchImpl = fetch) {
   if (typeof openingText !== 'string') throw new Error('冒頭の挨拶文を確認してください。');
   const openingSentences = splitSentences(openingText);
   const sentences = [...openingSentences, ...splitSentences(text)];
+  const convertSpeechText = createPronunciationConverter(pronunciationRules);
   if (sentences.length === 0 || sentences.length > MAX_SENTENCES) {
     throw new Error('読み上げ文を100文以内にしてください。');
   }
@@ -179,7 +186,7 @@ async function synthesizeSpeech({ text, openingText = '', styleId }, fetchImpl =
   let totalBytes = 44;
   for (const [index, sentence] of sentences.entries()) {
     const queryUrl = new URL(`${API_ORIGIN}/audio_query`);
-    queryUrl.searchParams.set('text', sentence);
+    queryUrl.searchParams.set('text', convertSpeechText(sentence));
     queryUrl.searchParams.set('speaker', String(styleId));
     const audioQuery = await requestJson(queryUrl, {
       method: 'POST',
@@ -282,4 +289,8 @@ async function synthesizeSpeech({ text, openingText = '', styleId }, fetchImpl =
   };
 }
 
-module.exports = { listSpeakers, normalizeSubtitleTiming, synthesizeSpeech };
+module.exports = {
+  listSpeakers,
+  normalizeSubtitleTiming,
+  synthesizeSpeech,
+};

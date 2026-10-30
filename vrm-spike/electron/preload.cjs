@@ -31,8 +31,10 @@ contextBridge.exposeInMainWorld('cProgramApi', Object.freeze({
 
 contextBridge.exposeInMainWorld('voicevoxApi', Object.freeze({
   listSpeakers: () => ipcRenderer.invoke('voicevox:list-speakers'),
+  getPronunciationRules: () => ipcRenderer.invoke('voicevox:get-pronunciation-rules'),
+  setPronunciationRules: (rules) => ipcRenderer.invoke('voicevox:set-pronunciation-rules', rules),
   synthesize: (text, styleId, openingText) => ipcRenderer.invoke('voicevox:synthesize', { text, styleId, openingText }),
-  saveChapterAudio: (chapterIndex, audio, durationSeconds, openingText, openingDurationSeconds, styleId, narration, speakerName, mouthTimeline) =>
+  saveChapterAudio: (chapterIndex, audio, durationSeconds, openingText, openingDurationSeconds, styleId, narration, speakerName, mouthTimeline, pronunciationRulesSignature) =>
     ipcRenderer.invoke('voicevox:save-chapter-audio', {
       chapterIndex,
       audio,
@@ -43,6 +45,7 @@ contextBridge.exposeInMainWorld('voicevoxApi', Object.freeze({
       narration,
       speakerName,
       mouthTimeline,
+      pronunciationRulesSignature,
     }),
   loadChapterAudio: (chapterIndex) => ipcRenderer.invoke('voicevox:load-chapter-audio', chapterIndex),
 }));

@@ -17,6 +17,11 @@ const { formatSrt } = require('./subtitle-export.cjs');
 const { createVideoEncoder } = require('./video-export.cjs');
 const { listSpeakers, normalizeSubtitleTiming, synthesizeSpeech } = require('./voicevox-service.cjs');
 const {
+  defaultPronunciationRules,
+  getPronunciationRulesSignature,
+  normalizePronunciationRules,
+} = require('./pronunciation-rules.cjs');
+const {
   CompanyApiError,
   requestCompanyChatCompletion,
   verifyCompanyApiModel,
@@ -29,7 +34,7 @@ const activeProjectDirectories = new Map();
 let testVideoExportFailureInjected = false;
 const VIDEO_EXPORT_ESTIMATED_BITRATE_BPS = 12_000_000;
 const VIDEO_EXPORT_STORAGE_RESERVE_BYTES = 64 * 1024 * 1024;
-const VIDEO_INTRO_SILENCE_SECONDS = 3;
+const VIDEO_INTRO_SILENCE_SECONDS = 2;
 const VIDEO_FINAL_HOLD_SECONDS = 3;
 app.setPath('userData', path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'CVideoToolSpike'));
 
@@ -57,6 +62,37 @@ async function writeScenarioAiProvider(provider) {
   await fs.mkdir(directory, { recursive: true });
   try {
     await fs.writeFile(temporaryPath, JSON.stringify({ provider }), 'utf8');
+    await fs.rename(temporaryPath, settingsPath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function getPronunciationSettingsPath() {
+  return path.join(app.getPath('userData'), 'pronunciation-dictionary-settings.json');
+}
+
+async function readPronunciationRules() {
+  let settings;
+  try {
+    settings = JSON.parse(await fs.readFile(getPronunciationSettingsPath(), 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return defaultPronunciationRules;
+    throw new Error('読み替え辞書設定を読み込めません。設定ファイルの内容とアクセス権を確認してください。');
+  }
+  if (!settings || typeof settings !== 'object' || !Object.hasOwn(settings, 'rules')) {
+    throw new Error('読み替え辞書設定の形式を確認してください。');
+  }
+  return normalizePronunciationRules(settings.rules);
+}
+
+async function writePronunciationRules(rules) {
+  const settingsPath = getPronunciationSettingsPath();
+  const temporaryPath = `${settingsPath}.${randomUUID()}.tmp`;
+  await fs.mkdir(app.getPath('userData'), { recursive: true });
+  try {
+    await fs.writeFile(temporaryPath, JSON.stringify({ rules }), 'utf8');
     await fs.rename(temporaryPath, settingsPath);
   } catch (error) {
     await fs.rm(temporaryPath, { force: true }).catch(() => {});
@@ -386,6 +422,41 @@ ipcMain.handle('scenario:set-ai-provider', async (_event, provider) => {
   }
 });
 
+ipcMain.handle('voicevox:get-pronunciation-rules', async () => {
+  try {
+    const rules = await readPronunciationRules();
+    return { loaded: true, rules, signature: getPronunciationRulesSignature(rules) };
+  } catch (error) {
+    return {
+      loaded: false,
+      message: error instanceof Error ? error.message : '読み替え辞書設定を読み込めません。',
+    };
+  }
+});
+
+ipcMain.handle('voicevox:set-pronunciation-rules', async (_event, rules) => {
+  let normalizedRules;
+  try {
+    normalizedRules = normalizePronunciationRules(rules);
+  } catch (error) {
+    return {
+      saved: false,
+      message: error instanceof Error ? error.message : '読み替え辞書の内容を確認してください。',
+    };
+  }
+  try {
+    await writePronunciationRules(normalizedRules);
+    return {
+      saved: true,
+      rules: normalizedRules,
+      signature: getPronunciationRulesSignature(normalizedRules),
+      message: '読み替え辞書を保存しました。すべてのプロジェクト・章に適用されます。',
+    };
+  } catch {
+    return { saved: false, message: '読み替え辞書を保存できませんでした。設定フォルダーのアクセス権を確認してください。' };
+  }
+});
+
 ipcMain.handle('scenario:get-company-api-key-status', async () => ({
   available: safeStorage.isEncryptionAvailable(),
   configured: Boolean(await readScenarioApiKey()),
@@ -453,10 +524,21 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
   try {
     const loaded = await loadScenarioProject(projectDirectory);
     chapter = loaded.draft.chapters[payload.chapterIndex];
-    const storedAudio = await loadChapterAudio(projectDirectory, payload.chapterIndex);
-    if (!chapter || !storedAudio || !chapter.audioAsset) {
+    if (!chapter) {
+      return { started: false, message: '書き出す章がプロジェクトにありません。' };
+    }
+    const pronunciationRules = await readPronunciationRules();
+    const storedAudio = await loadChapterAudio(projectDirectory, payload.chapterIndex, pronunciationRules);
+    if (!storedAudio) {
+      return {
+        started: false,
+        message: '現在の読み替え辞書設定に対応する保存済み音声がありません。章音声を現在の設定で再生成してください。',
+      };
+    }
+    if (!chapter.audioAsset) {
       return { started: false, message: 'この章の保存済み音声がありません。音声を生成してプロジェクトを保存してください。' };
     }
+    chapter.audioAsset = storedAudio.audioAsset;
     if (chapter.subtitles.some((subtitle) => subtitle.endSeconds > storedAudio.audioAsset.durationSeconds)) {
       return { started: false, message: '字幕が章音声の範囲を超えています。字幕時刻を修正してください。' };
     }
@@ -666,6 +748,16 @@ ipcMain.handle('voicevox:synthesize', async (_event, payload = {}) => {
   ) {
     return { generated: false, message: '読み上げ文（10,000文字以内）と話者を確認してください。' };
   }
+  let pronunciationRules;
+  try {
+    pronunciationRules = await readPronunciationRules();
+  } catch (error) {
+    return {
+      generated: false,
+      message: error instanceof Error ? error.message : '読み替え辞書設定を読み込めません。',
+    };
+  }
+  const pronunciationRulesSignature = getPronunciationRulesSignature(pronunciationRules);
   if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VOICEVOX_MODE === 'speakers') {
     const openingDurationSeconds = payload.openingText ? 0.8 : 0;
     const audioDurationSeconds = 4;
@@ -678,16 +770,18 @@ ipcMain.handle('voicevox:synthesize', async (_event, payload = {}) => {
       ),
       mouthTimeline: createTestMouthTimeline(),
       openingDurationSeconds,
+      pronunciationRulesSignature,
     };
   }
   try {
-    return await synthesizeSpeech({ ...payload, text: payload.text.trim() })
+    return await synthesizeSpeech({ ...payload, text: payload.text.trim(), pronunciationRules })
       .then(({ audio, subtitles, mouthTimeline, openingDurationSeconds }) => ({
         generated: true,
         audio,
         subtitles,
         mouthTimeline,
         openingDurationSeconds,
+        pronunciationRulesSignature,
       }));
   } catch (error) {
     return {
@@ -708,6 +802,7 @@ ipcMain.handle('voicevox:save-chapter-audio', async (event, payload = {}) => {
     || payload.audio.byteLength > 50 * 1024 * 1024
     || typeof payload.narration !== 'string'
     || typeof payload.openingText !== 'string'
+    || typeof payload.pronunciationRulesSignature !== 'string'
     || !Number.isFinite(payload.openingDurationSeconds)
     || typeof payload.speakerName !== 'string'
     || payload.speakerName.trim().length === 0
@@ -716,6 +811,10 @@ ipcMain.handle('voicevox:save-chapter-audio', async (event, payload = {}) => {
     return { saved: false, message: '章音声の保存内容を確認してください。' };
   }
   try {
+    const pronunciationRules = await readPronunciationRules();
+    if (getPronunciationRulesSignature(pronunciationRules) !== payload.pronunciationRulesSignature) {
+      return { saved: false, message: '音声生成中に読み替え辞書が変更されました。現在の設定で音声を再生成してください。' };
+    }
     const audioAsset = await saveChapterAudio(projectDirectory, payload.chapterIndex, payload.audio, {
       durationSeconds: payload.durationSeconds,
       openingText: payload.openingText,
@@ -724,6 +823,7 @@ ipcMain.handle('voicevox:save-chapter-audio', async (event, payload = {}) => {
       narration: payload.narration,
       speakerName: payload.speakerName,
       mouthTimeline: payload.mouthTimeline,
+      pronunciationRules,
     });
     return { saved: true, audioAsset };
   } catch {
@@ -735,7 +835,11 @@ ipcMain.handle('voicevox:load-chapter-audio', async (event, chapterIndex) => {
   const projectDirectory = activeProjectDirectories.get(event.sender.id);
   if (!projectDirectory) return null;
   try {
-    return await loadChapterAudio(projectDirectory, chapterIndex);
+    const pronunciationRules = await readPronunciationRules();
+    const storedAudio = await loadChapterAudio(projectDirectory, chapterIndex, pronunciationRules);
+    return storedAudio
+      ? { ...storedAudio, pronunciationRulesSignature: getPronunciationRulesSignature(pronunciationRules) }
+      : null;
   } catch {
     return null;
   }
