@@ -29,8 +29,11 @@ assert.equal(
   'ぷりんとえふ関数といんと型。エス・ピー・アール・アイ・エヌ・ティー・エフ、エフ・ピー・アール・アイ・エヌ・ティー・エフ、ユー・アイ・エヌ・ティー、インテジャー、ピー・アール・アイ・エヌ・ティー・エフ2、_intは変えません。',
 );
 assert.equal(
-  convertPronunciationText('数値は値です。', { ...defaultPronunciationRules, 値: 'あたい' }),
-  'すうちはあたいです。',
+  convertPronunciationText('数値は値段を確認し、値だけを使います。', {
+    ...defaultPronunciationRules,
+    値: 'あたい',
+  }),
+  '数値は値段を確認し、あたいだけを使います。',
 );
 assert.equal(
   convertPronunciationText('level number file'),

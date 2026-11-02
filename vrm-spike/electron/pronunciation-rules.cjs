@@ -9,6 +9,7 @@ const MAX_PRONUNCIATION_READING_LENGTH = 100;
 const C_IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const ASCII_WORD_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/u;
 const ASCII_WORD_ALTERNATIVE = '\\b[A-Za-z][A-Za-z0-9_]*\\b';
+const HAN_CHARACTER_PATTERN = /\p{Script=Han}/u;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F-\u009F]/u;
 const ENGLISH_WORDS_PATH = path.join(path.dirname(require.resolve('word-list')), 'words.txt');
 const ENGLISH_WORDS = new Set(
@@ -125,8 +126,19 @@ function createPronunciationConverter(rules = defaultPronunciationRules) {
     ].join('|'),
     'gu',
   );
-  return (text) => text.replace(pattern, (term) => {
-    if (!ASCII_WORD_PATTERN.test(term)) return normalized[term] ?? term;
+  return (text) => text.replace(pattern, (term, offset, source) => {
+    if (!ASCII_WORD_PATTERN.test(term)) {
+      if (!Object.hasOwn(normalized, term)) return term;
+      const firstCharacter = [...term][0];
+      const lastCharacter = [...term].at(-1);
+      const previousCharacter = [...source.slice(0, offset)].at(-1);
+      const nextCharacter = [...source.slice(offset + term.length)][0];
+      if (
+        (HAN_CHARACTER_PATTERN.test(firstCharacter) && previousCharacter && HAN_CHARACTER_PATTERN.test(previousCharacter))
+        || (HAN_CHARACTER_PATTERN.test(lastCharacter) && nextCharacter && HAN_CHARACTER_PATTERN.test(nextCharacter))
+      ) return term;
+      return normalized[term];
+    }
     const englishWord = term.toLowerCase();
     if (ENGLISH_WORDS.has(englishWord)) {
       return ENGLISH_PRONUNCIATION_OVERRIDES[englishWord] ?? toKatakana(englishWord);
