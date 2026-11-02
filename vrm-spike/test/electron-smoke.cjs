@@ -334,6 +334,7 @@ async function main() {
       await window.waitForFunction(() => document.querySelector('#pronunciation-settings-status')?.textContent.includes('件を全プロジェクト'));
       const currentSettings = await window.evaluate(() => window.voicevoxApi.getPronunciationRules());
       assert.equal(currentSettings.loaded, true);
+      assert.equal(currentSettings.rules.数値, 'すうち', 'the built-in compound reading should be merged with existing custom rules');
       pronunciationRulesToRestore = currentSettings.rules;
       assert.equal(await window.locator('#pronunciation-settings-button').isEnabled(), true);
       await window.locator('#pronunciation-settings-button').click();

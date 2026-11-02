@@ -29,8 +29,12 @@ assert.equal(
   'ぷりんとえふ関数といんと型。エス・ピー・アール・アイ・エヌ・ティー・エフ、エフ・ピー・アール・アイ・エヌ・ティー・エフ、ユー・アイ・エヌ・ティー、インテジャー、ピー・アール・アイ・エヌ・ティー・エフ2、_intは変えません。',
 );
 assert.equal(
-  convertPronunciationText('値はprintfで設定する。', { ...defaultPronunciationRules, 値: 'あたい' }),
-  'あたいはぷりんとえふで設定する。',
+  convertPronunciationText('数値は値です。', { ...defaultPronunciationRules, 値: 'あたい' }),
+  'すうちはあたいです。',
+);
+assert.equal(
+  convertPronunciationText('level number file'),
+  'レベル ナンバー ファイル',
 );
 assert.equal(
   convertPronunciationText('value printf int xyz', {

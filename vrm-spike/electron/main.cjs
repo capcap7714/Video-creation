@@ -111,7 +111,7 @@ async function readPronunciationRules() {
   if (!settings || typeof settings !== 'object' || !Object.hasOwn(settings, 'rules')) {
     throw new Error('読み替え辞書設定の形式を確認してください。');
   }
-  return normalizePronunciationRules(settings.rules);
+  return normalizePronunciationRules({ ...defaultPronunciationRules, ...settings.rules });
 }
 
 async function writePronunciationRules(rules) {
