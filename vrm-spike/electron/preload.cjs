@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('videoApi', Object.freeze({
   writeFrame: (exportId, frameIndex, frame) => ipcRenderer.invoke('video:export-frame', { exportId, frameIndex, frame }),
   finishExport: (exportId) => ipcRenderer.invoke('video:export-finish', { exportId }),
   cancelExport: (exportId) => ipcRenderer.invoke('video:export-cancel', exportId),
+  openLastExport: () => ipcRenderer.invoke('video:open-last-export'),
 }));
 
 contextBridge.exposeInMainWorld('environmentApi', Object.freeze({

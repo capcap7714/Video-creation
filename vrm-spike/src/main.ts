@@ -163,6 +163,7 @@ declare global {
       writeFrame: (exportId: string, frameIndex: number, frame: Uint8Array) => Promise<{ written: boolean; message?: string }>;
       finishExport: (exportId: string) => Promise<{ saved: boolean; path?: string; message: string }>;
       cancelExport: (exportId: string) => Promise<boolean>;
+      openLastExport: () => Promise<{ opened: boolean; message: string }>;
     };
     environmentApi?: {
       checkDependencies: () => Promise<{
@@ -215,6 +216,7 @@ const captureButton = document.querySelector<HTMLButtonElement>('#capture-button
 const sequenceButton = document.querySelector<HTMLButtonElement>('#sequence-button')!;
 const benchmarkButton = document.querySelector<HTMLButtonElement>('#benchmark-button')!;
 const videoExportButton = document.querySelector<HTMLButtonElement>('#video-export-button')!;
+const videoOpenExportButton = document.querySelector<HTMLButtonElement>('#video-open-export-button')!;
 const videoCancelButton = document.querySelector<HTMLButtonElement>('#video-cancel-button')!;
 const videoExportStatus = document.querySelector<HTMLOutputElement>('#video-export-status')!;
 
@@ -1181,6 +1183,8 @@ videoExportButton.addEventListener('click', async () => {
   sequenceButton.disabled = true;
   benchmarkButton.disabled = true;
   videoExportButton.disabled = true;
+  videoOpenExportButton.hidden = true;
+  videoOpenExportButton.disabled = true;
   videoCancelButton.disabled = true;
   let exportStage = 'FFmpeg・章素材の確認と保存先の準備';
   setVideoExportStatus('FFmpegと章素材を確認しています...', 'working');
@@ -1230,6 +1234,8 @@ videoExportButton.addEventListener('click', async () => {
     }
     videoExportStatus.textContent = `${completed.message} ${completed.path ?? ''}`;
     setVideoExportStatus(`${completed.message} ${completed.path ?? ''}`, 'success');
+    videoOpenExportButton.hidden = false;
+    videoOpenExportButton.disabled = false;
   } catch (error) {
     if (error instanceof Error && error.message === '動画の書き出しを停止しました。') {
       setVideoExportStatus(error.message, 'cancelled');
@@ -1254,6 +1260,22 @@ videoExportButton.addEventListener('click', async () => {
     setPlaybackLocked(false);
     renderCompositionAt(Number(timeline.value));
     refreshChapterWorkflow();
+  }
+});
+
+videoOpenExportButton.addEventListener('click', async () => {
+  if (!window.videoApi) {
+    setVideoExportStatus('MP4を開く操作はElectronアプリ内で利用できます。', 'error');
+    return;
+  }
+  videoOpenExportButton.disabled = true;
+  try {
+    const result = await window.videoApi.openLastExport();
+    setVideoExportStatus(result.message, result.opened ? 'success' : 'error');
+  } catch {
+    setVideoExportStatus('MP4を開けませんでした。ファイルと既定の動画プレーヤーを確認してください。', 'error');
+  } finally {
+    videoOpenExportButton.disabled = false;
   }
 });
 

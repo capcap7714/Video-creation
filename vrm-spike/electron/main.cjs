@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron');
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -31,6 +31,7 @@ const devUrl = process.env.CVIDEO_DEV_URL || 'http://127.0.0.1:5173';
 const activeCExecutions = new Map();
 const activeVideoExports = new Map();
 const activeProjectDirectories = new Map();
+const completedVideoExports = new Map();
 let testVideoExportFailureInjected = false;
 const VIDEO_EXPORT_ESTIMATED_BITRATE_BPS = 12_000_000;
 const VIDEO_EXPORT_STORAGE_RESERVE_BYTES = 64 * 1024 * 1024;
@@ -249,6 +250,7 @@ async function generateCompanyScenario(input, previousDraft) {
 app.on('web-contents-created', (_event, contents) => {
   contents.on('destroyed', () => {
     activeProjectDirectories.delete(contents.id);
+    completedVideoExports.delete(contents.id);
     for (const [exportId, session] of activeVideoExports) {
       if (session.senderId === contents.id) {
         session.encoder.cancel();
@@ -657,6 +659,7 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
     const frameCount = contentFrames + 90;
     activeVideoExports.set(exportId, {
       senderId: event.sender.id,
+      projectDirectory,
       encoder,
       workingDirectory,
       outputPath,
@@ -741,12 +744,39 @@ ipcMain.handle('video:export-finish', async (event, payload = {}) => {
       for (const replacement of backups.reverse()) await fs.rename(replacement.backup, replacement.destination);
       throw error;
     }
+    completedVideoExports.set(event.sender.id, {
+      projectDirectory: session.projectDirectory,
+      path: session.outputPath,
+    });
     return { saved: true, message: 'MP4動画とSRT字幕を保存しました。', path: session.outputPath };
   } catch (error) {
     return { saved: false, message: error instanceof Error ? error.message : '動画を書き出せませんでした。' };
   } finally {
     activeVideoExports.delete(payload.exportId);
     await fs.rm(session.workingDirectory, { recursive: true, force: true });
+  }
+});
+
+ipcMain.handle('video:open-last-export', async (event) => {
+  const completedExport = completedVideoExports.get(event.sender.id);
+  if (!completedExport || activeProjectDirectories.get(event.sender.id) !== completedExport.projectDirectory) {
+    return { opened: false, message: 'このプロジェクトで書き出したMP4がありません。先に書き出してください。' };
+  }
+  try {
+    const file = await fs.stat(completedExport.path);
+    if (!file.isFile()) {
+      return { opened: false, message: '書き出したMP4ファイルが見つかりません。もう一度書き出してください。' };
+    }
+  } catch {
+    return { opened: false, message: '書き出したMP4ファイルが見つかりません。もう一度書き出してください。' };
+  }
+
+  try {
+    const errorMessage = await shell.openPath(completedExport.path);
+    if (errorMessage) return { opened: false, message: `MP4を開けませんでした: ${errorMessage}` };
+    return { opened: true, message: '書き出したMP4を開きました。' };
+  } catch {
+    return { opened: false, message: 'MP4を開けませんでした。既定の動画プレーヤーを確認してください。' };
   }
 });
 

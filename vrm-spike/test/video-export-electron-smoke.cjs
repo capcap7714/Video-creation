@@ -563,6 +563,19 @@ async function main() {
           'stale subtitle timing should be presented for confirmation before export',
         );
       await window.getByText(/MP4動画とSRT字幕を保存しました/).waitFor({ timeout: 120_000 });
+      assert.equal(await window.locator('#video-open-export-button').isVisible(), true);
+      const shellOpenPathPatched = await app.evaluate(({ shell }, expectedPath) => {
+        const openPath = async (filePath) => {
+          globalThis.__cvideoOpenedMp4Path = filePath;
+          return '';
+        };
+        shell.openPath = openPath;
+        return shell.openPath === openPath && typeof expectedPath === 'string';
+      }, outputPath);
+      assert.equal(shellOpenPathPatched, true, 'the OS file-opening API should be replaceable for integration testing');
+      await window.locator('#video-open-export-button').click();
+      await window.getByText('書き出したMP4を開きました。', { exact: true }).waitFor();
+      assert.equal(await app.evaluate(() => globalThis.__cvideoOpenedMp4Path), outputPath);
       console.log('MP4 export completed; extracting the synchronized event frame');
       const encodedSubtitles = await fs.readFile(subtitlePath, 'utf8');
       const encodedCues = [...encodedSubtitles.matchAll(/^\d+\r?\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\r?\n([\s\S]*?)(?=\r?\n\r?\n|$)/gm)];
