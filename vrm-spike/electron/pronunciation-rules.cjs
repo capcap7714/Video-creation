@@ -140,10 +140,10 @@ function createPronunciationConverter(rules = defaultPronunciationRules) {
       return normalized[term];
     }
     const englishWord = term.toLowerCase();
+    if (Object.hasOwn(normalized, term)) return normalized[term];
     if (ENGLISH_WORDS.has(englishWord)) {
       return ENGLISH_PRONUNCIATION_OVERRIDES[englishWord] ?? toKatakana(englishWord);
     }
-    if (Object.hasOwn(normalized, term)) return normalized[term];
     return term.replace(/[A-Za-z]+/gu, (letters) =>
       [...letters].map((letter) => ENGLISH_LETTER_READINGS[letter.toLowerCase()]).join('・'));
   });

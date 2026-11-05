@@ -14,6 +14,7 @@ import {
   TARGET_DURATION_TOLERANCE_RATIO,
   ScenarioDraftSchema,
   ScenarioRequestSchema,
+  retimeCodeStagesForAudio,
   retimeSubtitlesForAudio,
   type ScenarioDraft,
   type ScenarioGenerationOutcome,
@@ -1559,7 +1560,7 @@ async function drawVideoBoardTitle(text: string, x: number, y: number, width: nu
     characters.pop();
     displayText = `${characters.join('')}…`;
   }
-  videoFrameContext.fillText(displayText, x + width / 2, y + 31, maxWidth);
+  videoFrameContext.fillText(displayText, x + width / 2, y + 55, maxWidth);
   videoFrameContext.restore();
 }
 
@@ -1577,7 +1578,7 @@ async function drawVideoCodePanel(title: string, text: string, x: number, y: num
   videoFrameContext.fillRect(x, y, width, height);
   videoFrameContext.restore();
   drawVideoBoardTitle(title, x, y, width);
-  drawVideoTextPanel(text, x + 21, y + 75, width - 21, height - 135, 24, 'left', null);
+  drawVideoTextPanel(text, x + 21, y + 100, width - 21, height - 160, 24, 'left', null);
 }
 
 function drawVideoResultPanel(text: string, x: number, y: number, width: number, height: number) {
@@ -1970,7 +1971,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         refreshChapterMaterialStatus();
         return;
       }
-      const subtitleRefresh = applyGeneratedSubtitles(pending.subtitles, durationSeconds);
+      const subtitleRefresh = applyGeneratedSubtitles(
+        pending.subtitles,
+        durationSeconds,
+        pending.openingDurationSeconds,
+      );
       if (subtitleRefresh === 'failed') {
         chapterAudioStatus.textContent = '手動字幕を新しい音声に合わせて配置できません。字幕数を減らすか、字幕を置き換えてから再生成してください。新しい音声は保存していません。';
         refreshChapterMaterialStatus();
@@ -2202,21 +2207,39 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     const applyGeneratedSubtitles = (
       subtitles: { startSeconds: number; endSeconds: number; text: string }[],
       audioDurationSeconds: number,
+      openingDurationSeconds: number,
     ): 'replaced' | 'retimed' | 'failed' | null => {
       if (subtitles.length === 0) return null;
-      const hasExistingSubtitles = Boolean(subtitleList.querySelector('.subtitle-row'));
+      const sourceSubtitles = readSubtitleRows();
+      const sourceCodeStages = readStageRows();
+      const hasExistingSubtitles = sourceSubtitles.length > 0;
       let nextSubtitles = subtitles;
       let refreshMode: 'replaced' | 'retimed' = 'replaced';
       if (hasExistingSubtitles && !window.confirm(
         '音声から作成した字幕へ置き換えますか？ キャンセルすると手動字幕の本文を保持し、新しい音声に合わせて時刻を再生成します。',
       )) {
-        const retimed = retimeSubtitlesForAudio(readSubtitleRows(), subtitles, audioDurationSeconds);
+        const retimed = retimeSubtitlesForAudio(sourceSubtitles, subtitles, audioDurationSeconds);
         if (!retimed) return 'failed';
         nextSubtitles = retimed;
         refreshMode = 'retimed';
       }
       subtitleList.replaceChildren();
       nextSubtitles.forEach(addSubtitleRow);
+      const retimedCodeStages = retimeCodeStagesForAudio(
+        sourceCodeStages,
+        sourceSubtitles,
+        nextSubtitles,
+        Number.isFinite(Number(chapterAudioControls.dataset.openingDurationSeconds))
+          ? Number(chapterAudioControls.dataset.openingDurationSeconds)
+          : chapterAudioAsset?.openingDurationSeconds ?? 0,
+        openingDurationSeconds,
+        getCodeLineCount(),
+      );
+      if (retimedCodeStages) {
+        stageList.replaceChildren();
+        retimedCodeStages.forEach(addStageRow);
+        refreshStagePreview();
+      }
       generatedSubtitlePendingSave = true;
       markScenarioAsUnconfirmed();
       void refreshSubtitleSourceStatus();

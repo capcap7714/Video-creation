@@ -40,11 +40,17 @@ assert.equal(
   'レベル ナンバー ファイル',
 );
 assert.equal(
-  convertPronunciationText('value printf int xyz', {
+  convertPronunciationText('value code printf int xyz', {
     ...defaultPronunciationRules,
     value: 'ばりゅー',
+    code: 'こーど登録',
   }),
-  'バリュー ぷりんとえふ いんと エックス・ワイ・ゼット',
+  'ばりゅー こーど登録 ぷりんとえふ いんと エックス・ワイ・ゼット',
+);
+assert.equal(
+  convertPronunciationText('computer value', { value: 'ばりゅー' }),
+  'コンピューター ばりゅー',
+  'custom rules should override English auto-readings and built-in overrides',
 );
 const speakers = await listSpeakers(async (url, options) => {
   assert.equal(new URL(url).origin, 'http://127.0.0.1:50021');

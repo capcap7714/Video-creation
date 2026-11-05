@@ -140,6 +140,49 @@ export function getTargetNarrationCharacterRange(targetMinutes: number) {
   };
 }
 
+export function retimeCodeStagesForAudio(
+  codeStages: { atSeconds: number; visibleLines: number }[],
+  sourceSubtitles: { startSeconds: number; endSeconds: number; text: string }[],
+  targetSubtitles: { startSeconds: number; endSeconds: number; text: string }[],
+  sourceOpeningDurationSeconds: number,
+  targetOpeningDurationSeconds: number,
+  codeLineCount: number,
+) {
+  if (
+    codeStages.length === 0
+    || sourceSubtitles.length === 0
+    || targetSubtitles.length === 0
+    || codeStages.length !== sourceSubtitles.length
+    || !Number.isFinite(sourceOpeningDurationSeconds)
+    || !Number.isFinite(targetOpeningDurationSeconds)
+    || !Number.isInteger(codeLineCount)
+    || codeLineCount < 1
+  ) return null;
+
+  const toleranceSeconds = 0.05;
+  const isAnchored = codeStages.every((stage, index) =>
+    Number.isFinite(stage.atSeconds)
+    && Number.isFinite(stage.visibleLines)
+    && Math.abs(stage.atSeconds + sourceOpeningDurationSeconds - sourceSubtitles[index].startSeconds) <= toleranceSeconds);
+  if (!isAnchored) return null;
+
+  let previousVisibleLines = 1;
+  return targetSubtitles.map((subtitle, index) => {
+    const sourceIndex = targetSubtitles.length === 1
+      ? codeStages.length - 1
+      : Math.round(index * (codeStages.length - 1) / (targetSubtitles.length - 1));
+    const isLastStage = index === targetSubtitles.length - 1;
+    const visibleLines = isLastStage
+      ? codeLineCount
+      : Math.min(codeLineCount, Math.max(previousVisibleLines, codeStages[sourceIndex].visibleLines));
+    previousVisibleLines = visibleLines;
+    return {
+      atSeconds: Math.round(Math.max(0, subtitle.startSeconds - targetOpeningDurationSeconds) * 1000) / 1000,
+      visibleLines,
+    };
+  });
+}
+
 export function retimeSubtitlesForAudio(
   subtitles: { startSeconds: number; endSeconds: number; text: string }[],
   generatedSubtitles: { startSeconds: number; endSeconds: number; text: string }[],
@@ -356,7 +399,7 @@ export function createScenarioPrompt(input: unknown): { request: ScenarioRequest
   const narrationCharacterRange = getTargetNarrationCharacterRange(request.targetMinutes);
   const codeStageInstructions = request.subtitleMotionMode === 'automatic'
     ? [
-      'コード例がある章では、字幕の表示タイミングに合わせたcodeStagesを作成してください。各段階のatSecondsは対応する字幕のstartSecondsと完全に一致させ、字幕と同じ順序にしてください。字幕は1章あたり最大100件とし、最終段階ではコード全体を表示してください。',
+      'コード例がある章では、字幕の表示タイミングに合わせたcodeStagesを作成してください。各段階のatSecondsは対応する字幕のstartSecondsと完全に一致させ、字幕と同じ順序にしてください。visibleLinesは説明内容に合わせ、必要な行だけを段階的に表示してください。同じ行数が続いても構いません。字幕は1章あたり最大100件とし、最終段階ではコード全体を表示してください。',
     ]
     : [
       'コード例がある章では段階表示用のcodeStagesを1件以上作成し、atSecondsを時刻順にしてください。visibleLinesは1行目から始め、コード全体へ段階的に増やしてください。',
@@ -421,12 +464,22 @@ export async function generateScenarioDraft(client: CopilotClient, input: unknow
             ? []
             : chapter.subtitles.length === 0
               ? [{ atSeconds: chapter.codeStages[0]?.atSeconds ?? 0, visibleLines: chapter.codeExample.split(/\r?\n/).length }]
-              : chapter.subtitles.map((subtitle, index) => ({
-              atSeconds: subtitle.startSeconds,
-              visibleLines: Math.ceil(
-                chapter.codeExample!.split(/\r?\n/).length * (index + 1) / chapter.subtitles.length,
-              ),
-            })),
+              : (() => {
+                const codeLineCount = chapter.codeExample!.split(/\r?\n/).length;
+                const modelLinesMatchSubtitles = chapter.codeStages.length === chapter.subtitles.length;
+                let previousVisibleLines = 1;
+                return chapter.subtitles.map((subtitle, index) => {
+                  const isLastStage = index === chapter.subtitles.length - 1;
+                  const modelVisibleLines = modelLinesMatchSubtitles
+                    ? chapter.codeStages[index].visibleLines
+                    : Math.ceil(codeLineCount * (index + 1) / chapter.subtitles.length);
+                  const visibleLines = isLastStage
+                    ? codeLineCount
+                    : Math.min(codeLineCount, Math.max(previousVisibleLines, modelVisibleLines));
+                  previousVisibleLines = visibleLines;
+                  return { atSeconds: subtitle.startSeconds, visibleLines };
+                });
+              })(),
         })),
       }
       : generatedDraft;

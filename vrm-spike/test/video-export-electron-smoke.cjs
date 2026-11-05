@@ -498,7 +498,7 @@ async function main() {
     assert.equal(await window.locator('#video-result-heading').isHidden(), true, 'the result heading should not appear before its panel');
     assert.equal(afterExecution.previewText.code.split('\n').length, 1, 'only the first staged code line should remain visible before the final code stage');
     assert.ok(afterExecution.codeTextMinX >= 84, `code should begin inside the board's left edge (x=${afterExecution.codeTextMinX})`);
-    assert.ok(afterExecution.codeTextMinY >= 145, `code should begin below the chapter title inside the board (y=${afterExecution.codeTextMinY})`);
+    assert.ok(afterExecution.codeTextMinY >= 170, `code should begin well below the relocated chapter title inside the board (y=${afterExecution.codeTextMinY})`);
     assert.equal(afterExecution.previewText.subtitle, synchronizationCue.text, 'the generated subtitle should remain synchronized between timeline events');
     assertFrameMatchesPreview(afterExecution, 'after C-result timestamp');
 

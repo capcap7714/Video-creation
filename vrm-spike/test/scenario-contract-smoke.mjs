@@ -10,6 +10,7 @@ import {
   checkChapterTimeline,
   estimateNarrationDurationSeconds,
   getTargetNarrationCharacterRange,
+  retimeCodeStagesForAudio,
   retimeSubtitlesForAudio,
   generateScenarioDraft,
   generateScenarioDraftSafely,
@@ -63,6 +64,29 @@ assert.match(automaticPrompt, /"action":"explain"/u);
 assert.match(automaticPrompt, /対応する字幕のstartSecondsと完全に一致/u);
 assert.deepEqual(getTargetNarrationCharacterRange(3), { minimum: 720, maximum: 1080 });
 assert.equal(estimateNarrationDurationSeconds('あいうえお'), 1);
+const retimedCodeStages = retimeCodeStagesForAudio([
+  { atSeconds: 1, visibleLines: 1 },
+  { atSeconds: 2, visibleLines: 3 },
+], [
+  { startSeconds: 2, endSeconds: 2.5, text: 'はじめに変数を宣言します。' },
+  { startSeconds: 3, endSeconds: 3.5, text: '次に値を返します。' },
+], [
+  { startSeconds: 2.5, endSeconds: 3, text: 'はじめに変数を宣言します。' },
+  { startSeconds: 4, endSeconds: 4.5, text: '最後に値を返します。' },
+], 1, 0.5, 4);
+assert.deepEqual(retimedCodeStages, [
+  { atSeconds: 2, visibleLines: 1 },
+  { atSeconds: 3.5, visibleLines: 4 },
+], 'automatically subtitle-anchored code stages should retime to generated speech and fully reveal the code');
+assert.equal(retimeCodeStagesForAudio(
+  [{ atSeconds: 1.5, visibleLines: 1 }, { atSeconds: 2, visibleLines: 3 }],
+  [
+    { startSeconds: 1, endSeconds: 1.5, text: '字幕1' },
+    { startSeconds: 2, endSeconds: 2.5, text: '字幕2' },
+  ],
+  [{ startSeconds: 2.5, endSeconds: 3, text: '字幕1' }, { startSeconds: 4, endSeconds: 4.5, text: '字幕2' }],
+  0, 0, 4,
+), null, 'manually adjusted code stages must not be overwritten');
 const retimedSubtitles = retimeSubtitlesForAudio([
   { startSeconds: 0, endSeconds: 1, text: '手動字幕1' },
   { startSeconds: 1, endSeconds: 2, text: '手動字幕2' },
@@ -237,9 +261,9 @@ const automaticDraftResponse = {
   title: request.title,
   chapters: [{
     ...draft.chapters[0],
-    codeExample: 'int value = 1;\nreturn value;',
+    codeExample: 'int value = 1;\nvalue += 1;\nreturn value;',
     codeDisplayMode: 'staged',
-    codeStages: [{ atSeconds: 0, visibleLines: 1 }],
+    codeStages: [{ atSeconds: 1.25, visibleLines: 1 }, { atSeconds: 2.75, visibleLines: 1 }],
     subtitles: [
       { startSeconds: 1.25, endSeconds: 2.5, text: '値を宣言します。' },
       { startSeconds: 2.75, endSeconds: 4, text: '値を返します。' },
@@ -255,8 +279,8 @@ assert.deepEqual(
 );
 assert.deepEqual(
   alignedAutomaticDraft.chapters[0].codeStages.map(({ visibleLines }) => visibleLines),
-  [1, 2],
-  'automatic code stages should reveal the complete example by the final subtitle',
+  [1, 3],
+  'automatic code stages should preserve model-selected semantic reveal counts and reveal the complete example by the final subtitle',
 );
 
 const previousDraft = structuredClone(draft);
