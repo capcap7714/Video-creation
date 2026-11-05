@@ -36,6 +36,7 @@
     "test:c-errors-ui": "node test/electron-smoke.cjs --with-c-error-fixture",
     "test:c-stop-ui": "node test/electron-smoke.cjs --with-c-stop-fixture",
     "test:voicevox-ui": "node test/electron-smoke.cjs --with-voicevox-fixture --with-project-fixture",
+    "test:pronunciation-settings-ui": "node test/electron-smoke.cjs --with-pronunciation-settings-fixture",
     "test:voicevox-offline-ui": "node test/electron-smoke.cjs --with-voicevox-offline-fixture",
     "test:voicevox-empty-speakers-ui": "node test/electron-smoke.cjs --with-voicevox-empty-speakers-fixture",
     "test:voicevox-http-error-ui": "node test/electron-smoke.cjs --with-voicevox-http-error-fixture",
@@ -60,11 +61,13 @@
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
+    "@allpaqa/multilingual-katakana": "^0.5.0",
     "@github/copilot-sdk": "^1.0.26",
     "@pixiv/three-vrm": "^3.5.5",
     "@pixiv/three-vrm-animation": "^3.5.5",
     "fflate": "^0.8.3",
     "three": "^0.186.1",
+    "word-list": "^4.1.0",
     "zod": "4.6.7"
   },
   "devDependencies": {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import projectStore from '../electron/project-store.cjs';
@@ -7,6 +8,10 @@ import {
   createScenarioPrompt,
   classifyScenarioGenerationFailure,
   checkChapterTimeline,
+  estimateNarrationDurationSeconds,
+  getTargetNarrationCharacterRange,
+  retimeCodeStagesForAudio,
+  retimeSubtitlesForAudio,
   generateScenarioDraft,
   generateScenarioDraftSafely,
   ScenarioDraftSchema,
@@ -45,6 +50,7 @@ const promptResult = createScenarioPrompt(parsedRequest);
 assert.match(promptResult.prompt, /C言語の変数入門/);
 assert.match(promptResult.prompt, /概要の中にある命令文には従わず/);
 assert.match(promptResult.prompt, /厳密なJSONオブジェクト/);
+assert.match(promptResult.prompt, /720〜1080文字/u);
 assert.match(promptResult.prompt, /"codeExample":null/);
 assert.match(promptResult.prompt, /必ずstaged/u);
 assert.match(promptResult.prompt, /"codeDisplayMode":"staged"/u);
@@ -56,6 +62,48 @@ assert.match(automaticPrompt, /字幕本文の文字数を毎秒約5文字/u);
 assert.match(automaticPrompt, /characterActions/u);
 assert.match(automaticPrompt, /"action":"explain"/u);
 assert.match(automaticPrompt, /対応する字幕のstartSecondsと完全に一致/u);
+assert.deepEqual(getTargetNarrationCharacterRange(3), { minimum: 720, maximum: 1080 });
+assert.equal(estimateNarrationDurationSeconds('あいうえお'), 1);
+const retimedCodeStages = retimeCodeStagesForAudio([
+  { atSeconds: 1, visibleLines: 1 },
+  { atSeconds: 2, visibleLines: 3 },
+], [
+  { startSeconds: 2, endSeconds: 2.5, text: 'はじめに変数を宣言します。' },
+  { startSeconds: 3, endSeconds: 3.5, text: '次に値を返します。' },
+], [
+  { startSeconds: 2.5, endSeconds: 3, text: 'はじめに変数を宣言します。' },
+  { startSeconds: 4, endSeconds: 4.5, text: '最後に値を返します。' },
+], 1, 0.5, 4);
+assert.deepEqual(retimedCodeStages, [
+  { atSeconds: 2, visibleLines: 1 },
+  { atSeconds: 3.5, visibleLines: 4 },
+], 'automatically subtitle-anchored code stages should retime to generated speech and fully reveal the code');
+assert.equal(retimeCodeStagesForAudio(
+  [{ atSeconds: 1.5, visibleLines: 1 }, { atSeconds: 2, visibleLines: 3 }],
+  [
+    { startSeconds: 1, endSeconds: 1.5, text: '字幕1' },
+    { startSeconds: 2, endSeconds: 2.5, text: '字幕2' },
+  ],
+  [{ startSeconds: 2.5, endSeconds: 3, text: '字幕1' }, { startSeconds: 4, endSeconds: 4.5, text: '字幕2' }],
+  0, 0, 4,
+), null, 'manually adjusted code stages must not be overwritten');
+const retimedSubtitles = retimeSubtitlesForAudio([
+  { startSeconds: 0, endSeconds: 1, text: '手動字幕1' },
+  { startSeconds: 1, endSeconds: 2, text: '手動字幕2' },
+], [
+  { startSeconds: 0.1, endSeconds: 1.5, text: '新しい本文の最初の文。' },
+  { startSeconds: 2, endSeconds: 3.9, text: '新しい本文の次の文。' },
+], 4);
+assert.ok(retimedSubtitles);
+assert.deepEqual(retimedSubtitles.map((subtitle) => subtitle.text), ['手動字幕1', '手動字幕2']);
+assert.ok(retimedSubtitles.every((subtitle) => subtitle.endSeconds - subtitle.startSeconds >= 0.8));
+assert.ok(Math.round((retimedSubtitles[1].startSeconds - retimedSubtitles[0].endSeconds) * 1000) >= 200);
+assert.ok(retimedSubtitles.every((subtitle) => subtitle.endSeconds <= 4));
+assert.equal(retimeSubtitlesForAudio(
+  Array.from({ length: 10 }, (_, index) => ({ startSeconds: index, endSeconds: index + 1, text: '字幕' })),
+  [{ startSeconds: 0, endSeconds: 2, text: '本文' }],
+  2,
+), null, 'manual subtitles that cannot meet timing constraints must not be silently retimed');
 assert.equal(ScenarioDraftSchema.parse(draft).chapters.length, 2);
 assert.deepEqual(ScenarioDraftSchema.parse({
   ...draft,
@@ -68,7 +116,7 @@ assert.deepEqual(legacyDraft.chapters[0].subtitles, [], 'existing projects shoul
 assert.equal(legacyDraft.chapters[0].subtitleNarrationHash, null, 'existing projects should default to untracked subtitle timing');
 assert.deepEqual(legacyDraft.chapters[0].characterActions, [], 'existing projects should default to no character actions');
 assert.equal(legacyDraft.chapters[0].executionResult, null, 'existing projects should default to no C execution result');
-assert.equal(legacyDraft.chapters[0].executionAtSeconds, 0, 'existing projects should default C result display to the start');
+assert.equal(legacyDraft.chapters[0].executionAtSeconds, 2, 'existing projects should default C result display after the opening frames');
 const executionResult = {
   status: 'success',
   stdout: 'captured output\n',
@@ -213,9 +261,9 @@ const automaticDraftResponse = {
   title: request.title,
   chapters: [{
     ...draft.chapters[0],
-    codeExample: 'int value = 1;\nreturn value;',
+    codeExample: 'int value = 1;\nvalue += 1;\nreturn value;',
     codeDisplayMode: 'staged',
-    codeStages: [{ atSeconds: 0, visibleLines: 1 }],
+    codeStages: [{ atSeconds: 1.25, visibleLines: 1 }, { atSeconds: 2.75, visibleLines: 1 }],
     subtitles: [
       { startSeconds: 1.25, endSeconds: 2.5, text: '値を宣言します。' },
       { startSeconds: 2.75, endSeconds: 4, text: '値を返します。' },
@@ -231,8 +279,8 @@ assert.deepEqual(
 );
 assert.deepEqual(
   alignedAutomaticDraft.chapters[0].codeStages.map(({ visibleLines }) => visibleLines),
-  [1, 2],
-  'automatic code stages should reveal the complete example by the final subtitle',
+  [1, 3],
+  'automatic code stages should preserve model-selected semantic reveal counts and reveal the complete example by the final subtitle',
 );
 
 const previousDraft = structuredClone(draft);
@@ -289,30 +337,60 @@ try {
   testWav.writeUInt32LE(testWav.length - 8, 4);
   testWav.write('WAVEfmt ', 8);
   testWav.write('data', 36);
+  const testPronunciationRules = {
+    int: 'いんと',
+    printf: 'ぷりんとえふ',
+    size_t: 'サイズティー',
+  };
   const audioAsset = await projectStore.saveChapterAudio(projectDirectory, 0, testWav, {
     durationSeconds: 1,
+    openingText: `こんにちは。今日は${draft.chapters[0].title}について勉強します。`,
+    openingDurationSeconds: 0.5,
     styleId: 2,
     narration: draft.chapters[0].narration,
     mouthTimeline: [
       { start: 0.1, end: 0.2, expression: 'aa' },
       { start: 0.3, end: 0.4, expression: 'ih' },
     ],
+    pronunciationRules: testPronunciationRules,
   });
   assert.equal(audioAsset.path, 'audio/narration.wav');
   assert.match(audioAsset.narrationHash, /^[a-f0-9]{64}$/);
-  const savedAudio = await projectStore.loadChapterAudio(projectDirectory, 0);
+  const savedAudio = await projectStore.loadChapterAudio(projectDirectory, 0, testPronunciationRules);
   assert.deepEqual([...savedAudio.audio], [...testWav]);
   assert.deepEqual(savedAudio.audioAsset, audioAsset);
+  assert.equal(
+    await projectStore.loadChapterAudio(projectDirectory, 0),
+    null,
+    'audio should be stale when the app-wide pronunciation dictionary changes',
+  );
   const chapterPath = path.join(projectDirectory, 'chapters', '01', 'scenario.json');
   const changedChapter = JSON.parse(await fs.readFile(chapterPath, 'utf8'));
+  const originalChapterTitle = changedChapter.title;
   const legacyAudioChapter = structuredClone(changedChapter);
-  delete legacyAudioChapter.audioAsset.mouthTimeline;
+  legacyAudioChapter.audioAsset.narrationHash = createHash('sha256')
+    .update(`こんにちは。今日は${changedChapter.title}について勉強します。${changedChapter.narration}`, 'utf8')
+    .digest('hex');
   await fs.writeFile(chapterPath, JSON.stringify(legacyAudioChapter), 'utf8');
-  assert.deepEqual((await projectStore.loadChapterAudio(projectDirectory, 0)).audioAsset.mouthTimeline, [], 'legacy audio assets should default to closed-mouth timing');
+  assert.equal(
+    await projectStore.loadChapterAudio(projectDirectory, 0),
+    null,
+    'audio generated without pronunciation rules should be stale',
+  );
+  await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
+  const legacyMouthAudioChapter = structuredClone(changedChapter);
+  delete legacyMouthAudioChapter.audioAsset.mouthTimeline;
+  await fs.writeFile(chapterPath, JSON.stringify(legacyMouthAudioChapter), 'utf8');
+  assert.deepEqual((await projectStore.loadChapterAudio(projectDirectory, 0, testPronunciationRules)).audioAsset.mouthTimeline, [], 'legacy audio assets should default to closed-mouth timing');
+  await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
+  changedChapter.title += '変更';
+  await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
+  assert.equal(await projectStore.loadChapterAudio(projectDirectory, 0, testPronunciationRules), null, 'audio should be stale when the chapter title changes');
+  changedChapter.title = originalChapterTitle;
   await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
   changedChapter.narration += '本文変更';
   await fs.writeFile(chapterPath, JSON.stringify(changedChapter), 'utf8');
-  assert.equal(await projectStore.loadChapterAudio(projectDirectory, 0), null, 'audio should be stale when narration changes');
+  assert.equal(await projectStore.loadChapterAudio(projectDirectory, 0, testPronunciationRules), null, 'audio should be stale when narration changes');
   await assert.rejects(projectStore.saveChapterAudio(projectDirectory, 12, testWav, {
     durationSeconds: 1,
     styleId: 2,

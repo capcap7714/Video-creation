@@ -7,104 +7,10 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob: ws://127.0.0.1:5173; worker-src 'self' blob:;"
     />
-    <title>VRM実機スパイク</title>
+    <title>C言語学習動画作成ツール</title>
   </head>
   <body>
     <main class="shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">DEVICE SPIKE / 01</p>
-          <h1>VRM描画テスト</h1>
-        </div>
-        <span id="runtime-status" class="runtime-status">モデル未読込</span>
-      </header>
-
-      <section class="toolbar" aria-label="描画設定">
-        <label class="file-picker">
-          <span>プロジェクトへコピーして開く</span>
-          <input id="model-file" type="file" accept=".vrm,model/gltf-binary" />
-        </label>
-        <button id="external-model-button" type="button">プロジェクト外のVRMを参照</button>
-        <label class="file-picker">
-          <span>VRMAモーション</span>
-          <input id="motion-file" type="file" accept=".vrma,model/gltf-binary" disabled />
-        </label>
-        <label class="file-picker">
-          <span>母音タイムライン</span>
-          <input id="mouth-timeline-file" type="file" accept=".json,application/json" disabled />
-        </label>
-        <div class="time-control">
-          <span>再生位置</span>
-          <span class="timeline-track">
-            <input id="timeline" type="range" min="0" max="10" step="0.033333" value="0" aria-label="再生位置" />
-            <span id="timeline-markers" class="timeline-markers" role="group" aria-label="字幕・コード・実行・動作・クレジットのタイムラインマーカー"></span>
-          </span>
-          <output id="time-value" for="timeline">0.00 s</output>
-        </div>
-        <div class="playback-controls" aria-label="プレビュー再生">
-          <button id="play-button" type="button">再生</button>
-          <button id="pause-button" type="button" disabled>一時停止</button>
-          <button id="rewind-button" type="button">先頭へ</button>
-        </div>
-        <button id="capture-button" type="button" disabled>1080p PNG撮影</button>
-        <button id="sequence-button" type="button" disabled>3秒フレームZIP</button>
-        <button id="benchmark-button" type="button" disabled>30fps描画テスト</button>
-        <button id="video-export-button" type="button" disabled>章MP4を書き出す</button>
-        <button id="video-cancel-button" type="button" disabled>書き出しを停止</button>
-        <button id="ffmpeg-check-button" type="button">FFmpegを確認</button>
-        <output id="ffmpeg-status" class="ffmpeg-status" role="status" aria-live="polite">未確認</output>
-        <button id="dependency-check-button" type="button">環境をまとめて確認</button>
-        <output id="dependency-status" class="dependency-status" role="status" aria-live="polite"></output>
-        <button id="diagnostic-copy-button" type="button">環境情報をコピー</button>
-        <output id="diagnostic-copy-status" class="diagnostic-copy-status" role="status" aria-live="polite"></output>
-        <output id="video-export-status" class="video-export-status" role="status" aria-live="polite"></output>
-      </section>
-
-      <section class="voicevox-panel" aria-labelledby="voicevox-heading">
-        <header class="voicevox-heading">
-          <div>
-            <p class="eyebrow">VOICE / LOCAL ENGINE</p>
-            <h2 id="voicevox-heading">音声試聴</h2>
-          </div>
-          <button id="voicevox-connect-button" type="button">話者一覧を取得</button>
-        </header>
-        <div class="voicevox-controls">
-          <label>話者・スタイル
-            <select id="voicevox-style" disabled></select>
-          </label>
-          <label>試聴テキスト
-            <textarea id="voicevox-text" maxlength="1000" rows="2">こんにちは。VOICEVOXの音声を確認します。</textarea>
-          </label>
-          <button id="voicevox-generate-button" type="button" disabled>試聴音声を生成</button>
-          <audio id="voicevox-audio" controls hidden></audio>
-        </div>
-        <p id="voicevox-status" class="voicevox-status" role="status" aria-live="polite">VOICEVOX Engineを起動して話者一覧を取得してください。</p>
-        <p id="voicevox-license-status" class="voicevox-license-status" role="status" aria-live="polite">利用条件の確認前は試聴・章音声を生成できません。</p>
-      </section>
-
-      <section class="stage" aria-label="1920×1080 VRM描画領域">
-        <canvas id="render-canvas" width="1920" height="1080"></canvas>
-        <pre id="video-code-preview" class="video-code-preview" hidden></pre>
-        <pre id="video-result-preview" class="video-result-preview" hidden></pre>
-        <div id="subtitle-preview" class="subtitle-preview" aria-label="字幕プレビュー" aria-live="polite" hidden></div>
-        <section id="credit-preview" class="credit-preview" aria-label="動画末尾のクレジット" hidden>
-          <span>C LANGUAGE / CREDIT</span>
-          <h2 id="credit-preview-title"></h2>
-          <p id="credit-preview-attribution"></p>
-        </section>
-        <div id="empty-state" class="empty-state">
-          <span class="empty-mark" aria-hidden="true">01</span>
-          <p>VRM 1.0モデルを選択</p>
-          <small>1920 × 1080 / 30 fps</small>
-        </div>
-      </section>
-
-      <footer class="readout">
-        <p id="model-readout">モデル: 未選択</p>
-        <p id="mouth-readout">口形: --</p>
-        <p id="result-readout" role="status" aria-live="polite">起動完了。VRMファイルを選択してください。</p>
-      </footer>
-
       <section class="scenario-workspace" aria-labelledby="scenario-heading">
         <header class="scenario-heading">
           <div>
@@ -123,6 +29,8 @@
             <option value="company-api">会社API</option>
           </select>
           <output id="scenario-ai-provider-status" role="status" aria-live="polite">設定を読み込み中</output>
+          <button id="pronunciation-settings-button" type="button" disabled>読み替え辞書を設定</button>
+          <output id="pronunciation-settings-status" role="status" aria-live="polite">辞書設定を読み込み中</output>
           <div class="scenario-api-key-controls">
             <label for="scenario-api-key">会社APIキー</label>
             <input id="scenario-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" aria-label="会社APIキー" />
@@ -152,8 +60,8 @@
           </div>
           <fieldset class="scenario-creation-mode">
             <legend>字幕・キャラクター動作の作成方法</legend>
-            <label><input id="scenario-creation-mode-manual" type="radio" name="subtitle-motion-mode" value="manual" checked />手動で設定</label>
-            <label><input id="scenario-creation-mode-automatic" type="radio" name="subtitle-motion-mode" value="automatic" />シナリオ作成時に自動作成</label>
+            <label><input id="scenario-creation-mode-automatic" type="radio" name="subtitle-motion-mode" value="automatic" checked />シナリオ作成時に自動作成</label>
+            <label><input id="scenario-creation-mode-manual" type="radio" name="subtitle-motion-mode" value="manual" />手動で設定</label>
           </fieldset>
           <div class="scenario-actions">
             <button id="scenario-open-button" type="button">プロジェクトを開く</button>
@@ -167,7 +75,121 @@
         <div class="chapter-list-actions" hidden>
           <button id="chapter-add-button" type="button">章を追加</button>
         </div>
+        <section id="chapter-workflow" class="chapter-workflow" aria-labelledby="chapter-workflow-heading" hidden>
+          <div class="chapter-workflow-heading">
+            <div>
+              <p class="eyebrow">CHAPTER / NEXT STEP</p>
+              <h3 id="chapter-workflow-heading">選択章の制作工程</h3>
+            </div>
+            <output id="chapter-workflow-status" role="status" aria-live="polite"></output>
+          </div>
+          <ol id="chapter-workflow-checklist" class="chapter-workflow-checklist"></ol>
+          <div class="chapter-workflow-actions">
+            <button id="workflow-audio-button" type="button" disabled>章音声を生成</button>
+            <button id="workflow-c-run-button" type="button" disabled>選択章のCコードを実行</button>
+            <button id="workflow-preview-button" type="button" disabled>選択章をプレビュー</button>
+            <button id="video-export-button" type="button" disabled>選択章をMP4に書き出す</button>
+            <button id="video-open-export-button" type="button" hidden disabled>書き出したMP4を開く</button>
+            <button id="video-cancel-button" type="button" disabled>書き出しを停止</button>
+          </div>
+          <output id="video-export-status" class="video-export-status" role="status" aria-live="polite"></output>
+        </section>
       </section>
+
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">C LANGUAGE / VIDEO PRODUCTION</p>
+          <h1>章のプレビュー</h1>
+        </div>
+        <span id="runtime-status" class="runtime-status">モデル未読込</span>
+      </header>
+
+      <section class="toolbar" aria-label="描画設定">
+        <label class="file-picker">
+          <span>プロジェクトへコピーして開く</span>
+          <input id="model-file" type="file" accept=".vrm,model/gltf-binary" />
+        </label>
+        <button id="external-model-button" type="button">プロジェクト外のVRMを参照</button>
+        <button id="model-flip-button" type="button" title="モデルが背面を向いている場合に180度反転します" disabled>向きを180°反転</button>
+        <label class="file-picker">
+          <span>VRMAモーション</span>
+          <input id="motion-file" type="file" accept=".vrma,model/gltf-binary" disabled />
+        </label>
+        <label class="file-picker">
+          <span>母音タイムライン</span>
+          <input id="mouth-timeline-file" type="file" accept=".json,application/json" disabled />
+        </label>
+        <div class="time-control">
+          <span>再生位置</span>
+          <span class="timeline-track">
+            <input id="timeline" type="range" min="0" max="10" step="0.033333" value="0" aria-label="再生位置" />
+            <span id="timeline-markers" class="timeline-markers" role="group" aria-label="字幕・コード・実行・動作・クレジットのタイムラインマーカー"></span>
+          </span>
+          <output id="time-value" for="timeline">0.00 s</output>
+        </div>
+        <div class="playback-controls" aria-label="プレビュー再生">
+          <button id="play-button" type="button">再生</button>
+          <button id="pause-button" type="button" disabled>一時停止</button>
+          <button id="rewind-button" type="button">先頭へ</button>
+        </div>
+        <button id="capture-button" type="button" disabled>1080p PNG撮影</button>
+        <button id="sequence-button" type="button" disabled>3秒フレームZIP</button>
+        <button id="benchmark-button" type="button" disabled>30fps描画テスト</button>
+        <button id="ffmpeg-check-button" type="button">FFmpegを確認</button>
+        <output id="ffmpeg-status" class="ffmpeg-status" role="status" aria-live="polite">未確認</output>
+        <button id="dependency-check-button" type="button">環境をまとめて確認</button>
+        <output id="dependency-status" class="dependency-status" role="status" aria-live="polite"></output>
+        <button id="diagnostic-copy-button" type="button">環境情報をコピー</button>
+        <output id="diagnostic-copy-status" class="diagnostic-copy-status" role="status" aria-live="polite"></output>
+      </section>
+
+      <section id="voicevox-panel" class="voicevox-panel" aria-labelledby="voicevox-heading" hidden>
+        <header class="voicevox-heading">
+          <div>
+            <p class="eyebrow">VOICE / LOCAL ENGINE</p>
+            <h2 id="voicevox-heading">音声試聴</h2>
+          </div>
+          <button id="voicevox-connect-button" type="button">話者一覧を取得</button>
+        </header>
+        <div class="voicevox-controls">
+          <label>話者・スタイル
+            <select id="voicevox-style" disabled></select>
+          </label>
+          <label>試聴テキスト
+            <textarea id="voicevox-text" maxlength="1000" rows="2">こんにちは。VOICEVOXの音声を確認します。</textarea>
+          </label>
+          <button id="voicevox-generate-button" type="button" disabled>試聴音声を生成</button>
+          <audio id="voicevox-audio" controls hidden></audio>
+        </div>
+        <p id="voicevox-status" class="voicevox-status" role="status" aria-live="polite">VOICEVOX Engineを起動して話者一覧を取得してください。</p>
+        <p id="voicevox-license-status" class="voicevox-license-status" role="status" aria-live="polite">利用条件の確認前は試聴・章音声を生成できません。</p>
+      </section>
+
+      <section class="stage" aria-label="1920×1080 動画プレビュー">
+        <canvas id="render-canvas" width="1920" height="1080"></canvas>
+        <h2 id="video-chapter-title-preview" class="video-chapter-title-preview" hidden></h2>
+        <pre id="video-code-preview" class="video-code-preview" hidden></pre>
+        <div id="video-result-heading" class="video-result-heading" hidden>実行結果</div>
+        <pre id="video-result-preview" class="video-result-preview" hidden></pre>
+        <div id="subtitle-preview" class="subtitle-preview" aria-label="字幕プレビュー" aria-live="polite" hidden></div>
+        <section id="credit-preview" class="credit-preview" aria-label="動画末尾のクレジット" hidden>
+          <span>C LANGUAGE / CREDIT</span>
+          <h2 id="credit-preview-title"></h2>
+          <p id="credit-preview-attribution"></p>
+        </section>
+        <div id="empty-state" class="empty-state">
+          <span class="empty-mark" aria-hidden="true">01</span>
+          <p>VRM 1.0モデルを選択</p>
+          <small>1920 × 1080 / 30 fps</small>
+        </div>
+      </section>
+
+      <footer class="readout">
+        <p id="model-readout">モデル: 未選択</p>
+        <p id="mouth-readout">口形: --</p>
+        <p id="result-readout" role="status" aria-live="polite">起動完了。VRMファイルを選択してください。</p>
+      </footer>
+
     </main>
     <dialog id="material-terms-dialog" aria-labelledby="material-terms-heading" aria-describedby="material-terms-description">
       <form method="dialog" class="material-terms-form">
@@ -180,6 +202,25 @@
         <div class="material-terms-actions">
           <button id="material-terms-cancel" value="cancel">選択しない</button>
           <button id="material-terms-approve" value="approve" disabled>確認済みとして利用</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="pronunciation-settings-dialog" aria-labelledby="pronunciation-settings-heading">
+      <form id="pronunciation-settings-form" class="pronunciation-settings-form">
+        <h2 id="pronunciation-settings-heading">読み替え辞書（アプリ共通）</h2>
+        <p>英字や日本語などの語句と読みを設定します。音声と字幕の表示時刻に適用し、字幕の文字は元の表記を保ちます。</p>
+        <div class="pronunciation-rule-heading" aria-hidden="true">
+          <span>読み替え前（語句）</span>
+          <span>読み</span>
+        </div>
+        <div id="pronunciation-rule-list" class="pronunciation-rule-list"></div>
+        <div class="pronunciation-settings-actions">
+          <button id="pronunciation-rule-add" type="button">読み替えを追加</button>
+          <output id="pronunciation-settings-dialog-status" role="status" aria-live="polite"></output>
+        </div>
+        <div class="pronunciation-settings-actions">
+          <button id="pronunciation-settings-cancel" type="button">キャンセル</button>
+          <button id="pronunciation-settings-save" type="submit">保存</button>
         </div>
       </form>
     </dialog>

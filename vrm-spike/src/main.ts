@@ -5,14 +5,26 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRM, VRMLoaderPlugin } from '@pixiv/three-vrm';
 import { createVRMAnimationClip, VRMAnimation, VRMAnimationLoaderPlugin } from '@pixiv/three-vrm-animation';
 import { zipSync } from 'fflate';
+import pronunciationRules from './pronunciation-rules.json';
 import {
   checkChapterTimeline,
+  estimateNarrationDurationSeconds,
+  getTargetNarrationCharacterRange,
+  NARRATION_CHARACTERS_PER_SECOND,
+  TARGET_DURATION_TOLERANCE_RATIO,
   ScenarioDraftSchema,
   ScenarioRequestSchema,
+  retimeCodeStagesForAudio,
+  retimeSubtitlesForAudio,
   type ScenarioDraft,
   type ScenarioGenerationOutcome,
   type ScenarioRequest,
 } from './scenario';
+
+type PronunciationRules = Record<string, string>;
+let currentPronunciationRules: PronunciationRules = canonicalizePronunciationRules(pronunciationRules);
+let currentPronunciationRulesSignature = JSON.stringify(currentPronunciationRules);
+let pronunciationSettingsReady = false;
 
 declare global {
   interface Window {
@@ -38,6 +50,12 @@ declare global {
       setCompanyApiKey: (apiKey: string) => Promise<{ saved: boolean; configured: boolean; message: string }>;
       deleteCompanyApiKey: () => Promise<{ deleted: boolean; configured: boolean; message: string }>;
       verifyCompanyApi: () => Promise<{ verified: boolean; message: string }>;
+      prepareNewProject: () => Promise<{
+        prepared: boolean;
+        newProject?: boolean;
+        cancelled?: boolean;
+        message?: string;
+      }>;
       generate: (input: ScenarioRequest, previousDraft: ScenarioDraft | null) => Promise<ScenarioGenerationOutcome>;
       save: (request: ScenarioRequest, draft: ScenarioDraft) => Promise<{
         saved: boolean;
@@ -49,6 +67,7 @@ declare global {
         saved: boolean;
         unavailable?: boolean;
         invalid?: boolean;
+        cancelled?: boolean;
         path?: string;
         message: string;
       }>;
@@ -87,21 +106,38 @@ declare global {
         speakers: { name: string; styles: { name: string; id: number }[] }[];
         message?: string;
       }>;
-      synthesize: (text: string, styleId: number) => Promise<{
+      getPronunciationRules: () => Promise<{
+        loaded: boolean;
+        rules?: PronunciationRules;
+        signature?: string;
+        message?: string;
+      }>;
+      setPronunciationRules: (rules: PronunciationRules) => Promise<{
+        saved: boolean;
+        rules?: PronunciationRules;
+        signature?: string;
+        message?: string;
+      }>;
+      synthesize: (text: string, styleId: number, openingText?: string) => Promise<{
         generated: boolean;
         audio?: Uint8Array;
         subtitles?: { startSeconds: number; endSeconds: number; text: string }[];
         mouthTimeline?: { start: number; end: number; expression: string }[];
+        openingDurationSeconds?: number;
+        pronunciationRulesSignature?: string;
         message?: string;
       }>;
       saveChapterAudio: (
         chapterIndex: number,
         audio: Uint8Array,
         durationSeconds: number,
+        openingText: string,
+        openingDurationSeconds: number,
         styleId: number,
         narration: string,
         speakerName: string,
         mouthTimeline: { start: number; end: number; expression: string }[],
+        pronunciationRulesSignature: string,
       ) => Promise<{
         saved: boolean;
         audioAsset?: ScenarioDraft['chapters'][number]['audioAsset'];
@@ -110,6 +146,7 @@ declare global {
       loadChapterAudio: (chapterIndex: number) => Promise<{
         audioAsset: NonNullable<ScenarioDraft['chapters'][number]['audioAsset']>;
         audio: Uint8Array;
+        pronunciationRulesSignature: string;
       } | null>;
     };
     videoApi?: {
@@ -127,6 +164,7 @@ declare global {
       writeFrame: (exportId: string, frameIndex: number, frame: Uint8Array) => Promise<{ written: boolean; message?: string }>;
       finishExport: (exportId: string) => Promise<{ saved: boolean; path?: string; message: string }>;
       cancelExport: (exportId: string) => Promise<boolean>;
+      openLastExport: () => Promise<{ opened: boolean; message: string }>;
     };
     environmentApi?: {
       checkDependencies: () => Promise<{
@@ -144,6 +182,16 @@ const canvas = document.querySelector<HTMLCanvasElement>('#render-canvas')!;
 const videoFrameCanvas = document.createElement('canvas');
 videoFrameCanvas.width = 1920;
 videoFrameCanvas.height = 1080;
+const DEFAULT_EXECUTION_AT_SECONDS = 2;
+const DEFAULT_VIDEO_INTRO_SECONDS = 2;
+function getChapterOpeningText(title: string) {
+  return `こんにちは。今日は${title.trim()}について勉強します。`;
+}
+
+function getChapterSpeechText(title: string, narration: string) {
+  return `${getChapterOpeningText(title)}${narration.trim()}`;
+}
+
 const videoFrameContext = videoFrameCanvas.getContext('2d')!;
 const blackboardImage = new Image();
 const blackboardImageReady = new Promise<HTMLImageElement>((resolve, reject) => {
@@ -153,6 +201,7 @@ const blackboardImageReady = new Promise<HTMLImageElement>((resolve, reject) => 
 blackboardImage.src = new URL('./assets/bunbougu_kokuban.png', import.meta.url).href;
 const fileInput = document.querySelector<HTMLInputElement>('#model-file')!;
 const externalModelButton = document.querySelector<HTMLButtonElement>('#external-model-button')!;
+const modelFlipButton = document.querySelector<HTMLButtonElement>('#model-flip-button')!;
 let activeModelFile: File | undefined;
 let activeModelStorageMode: 'copy' | 'external' = 'copy';
 let pendingModelStorageMode: 'copy' | 'external' | undefined;
@@ -168,8 +217,40 @@ const captureButton = document.querySelector<HTMLButtonElement>('#capture-button
 const sequenceButton = document.querySelector<HTMLButtonElement>('#sequence-button')!;
 const benchmarkButton = document.querySelector<HTMLButtonElement>('#benchmark-button')!;
 const videoExportButton = document.querySelector<HTMLButtonElement>('#video-export-button')!;
+const videoOpenExportButton = document.querySelector<HTMLButtonElement>('#video-open-export-button')!;
 const videoCancelButton = document.querySelector<HTMLButtonElement>('#video-cancel-button')!;
 const videoExportStatus = document.querySelector<HTMLOutputElement>('#video-export-status')!;
+
+function setVideoExportStatus(message: string, state: 'info' | 'working' | 'success' | 'error' | 'cancelled' = 'working') {
+  videoExportStatus.dataset.state = state;
+  videoExportStatus.textContent = message;
+}
+
+function getVideoExportAdvice(message: string) {
+  if (/ENOSPC|空き容量/i.test(message)) {
+    return '保存先の空き容量を確保するか、別のドライブを選んでください。';
+  }
+  if (/EACCES|EPERM|permission|access denied|アクセス権|書き込めません/i.test(message)) {
+    return '保存先フォルダーの書き込み権限を確認し、別のフォルダーでも試してください。';
+  }
+  if (/ffmpeg|encoder|H\.264|libx264|AAC|ENOENT/i.test(message)) {
+    return '「FFmpegを確認」を実行し、FFmpegとH.264/AACエンコーダーが利用可能か確認してください。';
+  }
+  if (/音声|字幕|章素材|プロジェクト/i.test(message)) {
+    return 'プロジェクトを保存し、対象章の音声・字幕素材がそろっているか確認してください。';
+  }
+  return '保存先、空き容量、対象章の素材を確認してください。詳細を添えて再試行できます。';
+}
+
+function showVideoExportFailure(stage: string, error: unknown) {
+  const message = (error instanceof Error ? error.message : String(error)).trim() || '詳細情報がありません。';
+  const detail = message.length > 1600 ? `${message.slice(0, 1600)}\n（詳細は長いため省略しました）` : message;
+  setVideoExportStatus(
+    `MP4を書き出せませんでした。\n停止した段階: ${stage}\n原因: ${detail}\n次の確認: ${getVideoExportAdvice(message)}`,
+    'error',
+  );
+}
+const voicevoxPanel = document.querySelector<HTMLElement>('#voicevox-panel')!;
 const voicevoxConnectButton = document.querySelector<HTMLButtonElement>('#voicevox-connect-button')!;
 const voicevoxStyle = document.querySelector<HTMLSelectElement>('#voicevox-style')!;
 const voicevoxText = document.querySelector<HTMLTextAreaElement>('#voicevox-text')!;
@@ -192,8 +273,10 @@ const diagnosticCopyStatus = document.querySelector<HTMLOutputElement>('#diagnos
 const runtimeStatus = document.querySelector<HTMLElement>('#runtime-status')!;
 const modelReadout = document.querySelector<HTMLElement>('#model-readout')!;
 const mouthReadout = document.querySelector<HTMLElement>('#mouth-readout')!;
+const videoChapterTitlePreview = document.querySelector<HTMLElement>('#video-chapter-title-preview')!;
 const videoCodePreview = document.querySelector<HTMLPreElement>('#video-code-preview')!;
 videoCodePreview.style.backgroundImage = `url("${blackboardImage.src}")`;
+const videoResultHeading = document.querySelector<HTMLElement>('#video-result-heading')!;
 const videoResultPreview = document.querySelector<HTMLPreElement>('#video-result-preview')!;
 const subtitlePreview = document.querySelector<HTMLElement>('#subtitle-preview')!;
 const creditPreview = document.querySelector<HTMLElement>('#credit-preview')!;
@@ -204,6 +287,15 @@ const emptyState = document.querySelector<HTMLElement>('#empty-state')!;
 const scenarioForm = document.querySelector<HTMLFormElement>('#scenario-request-form')!;
 const scenarioEditor = document.querySelector<HTMLDivElement>('#scenario-editor')!;
 const scenarioAiProviderSelect = document.querySelector<HTMLSelectElement>('#scenario-ai-provider')!;
+const pronunciationSettingsButton = document.querySelector<HTMLButtonElement>('#pronunciation-settings-button')!;
+const pronunciationSettingsStatus = document.querySelector<HTMLOutputElement>('#pronunciation-settings-status')!;
+const pronunciationSettingsDialog = document.querySelector<HTMLDialogElement>('#pronunciation-settings-dialog')!;
+const pronunciationSettingsForm = document.querySelector<HTMLFormElement>('#pronunciation-settings-form')!;
+const pronunciationRuleList = document.querySelector<HTMLDivElement>('#pronunciation-rule-list')!;
+const pronunciationRuleAddButton = document.querySelector<HTMLButtonElement>('#pronunciation-rule-add')!;
+const pronunciationSettingsDialogStatus = document.querySelector<HTMLOutputElement>('#pronunciation-settings-dialog-status')!;
+const pronunciationSettingsSaveButton = document.querySelector<HTMLButtonElement>('#pronunciation-settings-save')!;
+const pronunciationSettingsCancelButton = document.querySelector<HTMLButtonElement>('#pronunciation-settings-cancel')!;
 
 function requestMaterialTermsConfirmation(kind: string, name: string) {
   materialTermsDescription.textContent = `${kind}「${name}」の利用条件を確認してください。社内共有または動画利用が許可されていない場合や、条件を確認できない場合は「選択しない」を選んでください。`;
@@ -221,13 +313,39 @@ function isVoiceStyleApproved(styleId = voicevoxStyle.value) {
   return approvedVoiceStyleIds.has(styleId);
 }
 
+function getChapterAudioGenerationBlocker(narration: HTMLTextAreaElement | null, title: HTMLInputElement | null) {
+  if (!window.voicevoxApi) return 'Electronアプリ内で利用できます。';
+  if (!pronunciationSettingsReady) return '読み替え辞書設定を読み込んでください。';
+  if (!confirmedScenario) return '内容を確認してから章音声を生成してください。';
+  if (voicevoxStyle.disabled) return 'VOICEVOX Engineを起動し、「話者一覧を取得」してください。';
+  if (!voicevoxStyle.value || !Number.isSafeInteger(Number(voicevoxStyle.value))) return '話者・スタイルを選択してください。';
+  if (!isVoiceStyleApproved()) return '話者の利用条件を確認してください。';
+  if (!title || title.value.trim().length === 0) return '章タイトルを入力してください。';
+  if (title.value.trim().length > 80) return '章タイトルを80文字以内にしてください。';
+  if (!narration || narration.value.trim().length === 0) return '読み上げ本文を入力してください（1〜10,000文字）。';
+  if (narration.value.trim().length > 10000) return '読み上げ本文を10,000文字以内にしてください。';
+  return null;
+}
+
 function refreshVoiceGenerationControls() {
-  const voiceAvailable = !voicevoxStyle.disabled && isVoiceStyleApproved();
+  const voiceAvailable = pronunciationSettingsReady && !voicevoxStyle.disabled && isVoiceStyleApproved();
   voicevoxGenerateButton.disabled = !voiceAvailable;
   for (const button of scenarioEditor.querySelectorAll<HTMLButtonElement>('.chapter-audio-generate')) {
-    const narration = button.closest('fieldset')?.querySelector<HTMLTextAreaElement>('.chapter-narration');
-    button.disabled = !voiceAvailable || !narration || narration.value.trim().length > 1000;
+    const chapter = button.closest('fieldset');
+    const narration = chapter?.querySelector<HTMLTextAreaElement>('.chapter-narration');
+    const title = chapter?.querySelector<HTMLInputElement>('.chapter-title');
+    const blocker = getChapterAudioGenerationBlocker(narration ?? null, title ?? null);
+    button.disabled = Boolean(blocker);
+    const requirements = button.closest('.chapter-audio-controls')?.querySelector<HTMLElement>('.chapter-audio-requirements');
+    if (requirements) requirements.textContent = blocker ?? '条件を満たしています。音声を生成／再生成できます。';
   }
+}
+
+function moveVoicevoxPanelToSelectedChapter() {
+  const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
+  const chapterAudioControls = selectedChapter?.querySelector<HTMLElement>('.chapter-audio-controls');
+  voicevoxPanel.hidden = !chapterAudioControls;
+  if (chapterAudioControls) chapterAudioControls.append(voicevoxPanel);
 }
 
 async function ensureVoiceStyleApproved(styleId: string, speakerName: string) {
@@ -262,6 +380,12 @@ const chapterAddButton = document.querySelector<HTMLButtonElement>('#chapter-add
 const scenarioSaveStatus = document.querySelector<HTMLOutputElement>('#scenario-save-status')!;
 const scenarioMessage = document.querySelector<HTMLElement>('#scenario-message')!;
 const scenarioReviewState = document.querySelector<HTMLElement>('#scenario-review-state')!;
+const chapterWorkflow = document.querySelector<HTMLElement>('#chapter-workflow')!;
+const chapterWorkflowStatus = document.querySelector<HTMLOutputElement>('#chapter-workflow-status')!;
+const chapterWorkflowChecklist = document.querySelector<HTMLOListElement>('#chapter-workflow-checklist')!;
+const workflowAudioButton = document.querySelector<HTMLButtonElement>('#workflow-audio-button')!;
+const workflowCRunButton = document.querySelector<HTMLButtonElement>('#workflow-c-run-button')!;
+const workflowPreviewButton = document.querySelector<HTMLButtonElement>('#workflow-preview-button')!;
 let scenarioDraft: ScenarioDraft | null = null;
 let confirmedScenario: ScenarioDraft | null = null;
 let scenarioHasUnsavedChanges = true;
@@ -287,6 +411,87 @@ let playbackLocked = false;
 let voicevoxAudioUrl: string | null = null;
 let activeVideoExportId: string | null = null;
 const creditDurationSeconds = 3;
+const introSilenceSeconds = DEFAULT_VIDEO_INTRO_SECONDS;
+const finalHoldSeconds = 3;
+
+function getSelectedChapterFieldset() {
+  return scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset') ?? null;
+}
+
+function refreshChapterWorkflow() {
+  const chapter = getSelectedChapterFieldset();
+  chapterWorkflow.hidden = !chapter;
+  if (!chapter) {
+    workflowAudioButton.disabled = true;
+    workflowCRunButton.disabled = true;
+    workflowPreviewButton.disabled = true;
+    videoExportButton.disabled = true;
+    return;
+  }
+
+  const audioControls = chapter.querySelector<HTMLDivElement>('.chapter-audio-controls');
+  const audioReady = Boolean(audioControls?.dataset.audioAsset);
+  const subtitles = chapter.querySelectorAll('.subtitle-row');
+  const subtitleState = chapter.querySelector<HTMLOutputElement>('.subtitle-source-status')?.dataset.state;
+  const runCode = chapter.querySelector<HTMLInputElement>('.scenario-checkbox input')?.checked ?? false;
+  const code = chapter.querySelector<HTMLTextAreaElement>('.chapter-code')?.value ?? '';
+  const runInput = chapter.querySelector<HTMLTextAreaElement>('.c-run-input')?.value ?? '';
+  const result = chapter.dataset.executionResult
+    ? JSON.parse(chapter.dataset.executionResult) as NonNullable<ScenarioDraft['chapters'][number]['executionResult']>
+    : null;
+  const executionReady = !runCode || Boolean(
+    result
+    && result.sourceCode === code
+    && result.sourceInput === runInput
+    && result.status === 'success',
+  );
+  for (const executeButton of scenarioEditor.querySelectorAll<HTMLButtonElement>('.c-execute-button')) {
+    const owner = executeButton.closest('fieldset');
+    const enabled = owner?.querySelector<HTMLInputElement>('.scenario-checkbox input')?.checked ?? false;
+    const source = owner?.querySelector<HTMLTextAreaElement>('.chapter-code')?.value ?? '';
+    executeButton.disabled = !confirmedScenario || !enabled || !source.trim() || Boolean(activeVideoExportId);
+  }
+  const chapterExecuteButton = chapter.querySelector<HTMLButtonElement>('.c-execute-button');
+  const subtitlesReady = subtitles.length > 0 && !['stale', 'warning'].includes(subtitleState ?? '');
+  const contentConfirmed = Boolean(confirmedScenario);
+  const checks = [
+    { label: `内容${contentConfirmed ? '（確認済み）' : '（確認が必要）'}`, ready: contentConfirmed },
+    { label: `音声${audioReady ? '（生成済み）' : '（未生成／要更新）'}`, ready: audioReady },
+    { label: `字幕${subtitlesReady ? '（確認可能）' : '（不足／要確認）'}`, ready: subtitlesReady },
+    ...(runCode ? [{ label: `Cコード実行結果${executionReady ? '（最新）' : '（未実行／要更新）'}`, ready: executionReady }] : []),
+    { label: `VRMモデル${activeVrm ? '（読込済み）' : '（未読込）'}`, ready: Boolean(activeVrm) },
+  ];
+  chapterWorkflowChecklist.replaceChildren(...checks.map((check) => {
+    const item = document.createElement('li');
+    item.textContent = check.label;
+    item.dataset.state = check.ready ? 'ready' : 'needs-attention';
+    return item;
+  }));
+  const nextStep = !contentConfirmed ? '次の工程: 章の内容を確認してください。確認後に音声生成とCコード実行ができます。'
+    : !audioReady ? '次の工程: VOICEVOXで章音声を生成してください。'
+    : !subtitlesReady ? '次の工程: 字幕を生成または確認してください。'
+      : !executionReady ? '次の工程: 内容確認後、Cコードを実行してください。'
+        : !activeVrm ? '次の工程: VRMモデルを読み込んでください。'
+          : checks.every((check) => check.ready) ? '素材はそろっています。プレビュー確認後、MP4を書き出せます。'
+            : '未完了の素材を確認してください。';
+  chapterWorkflowStatus.textContent = nextStep;
+  workflowAudioButton.disabled = !chapter.querySelector<HTMLButtonElement>('.chapter-audio-generate')
+    || chapter.querySelector<HTMLButtonElement>('.chapter-audio-generate')!.disabled;
+  workflowCRunButton.disabled = !chapterExecuteButton || chapterExecuteButton.disabled;
+  workflowPreviewButton.disabled = !activeVrm || !audioReady;
+  videoExportButton.disabled = Boolean(activeVideoExportId);
+}
+
+scenarioEditor.addEventListener('input', refreshChapterWorkflow);
+scenarioEditor.addEventListener('change', refreshChapterWorkflow);
+workflowAudioButton.addEventListener('click', () => getSelectedChapterFieldset()
+  ?.querySelector<HTMLButtonElement>('.chapter-audio-generate')?.click());
+workflowCRunButton.addEventListener('click', () => getSelectedChapterFieldset()
+  ?.querySelector<HTMLButtonElement>('.c-execute-button')?.click());
+workflowPreviewButton.addEventListener('click', () => {
+  seekTo(0);
+  startPlayback();
+});
 
 function updateScenarioAiProviderUi() {
   scenarioAiProviderSelect.value = scenarioAiProvider;
@@ -326,6 +531,157 @@ async function loadScenarioAiProvider() {
     scenarioAiProviderStatus.textContent = 'AIプロバイダー設定を読み込めませんでした。';
   }
 }
+
+function canonicalizePronunciationRules(rules: PronunciationRules): PronunciationRules {
+  return Object.fromEntries(Object.entries(rules).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0));
+}
+
+function renderPronunciationRuleRows(rules: PronunciationRules) {
+  pronunciationRuleList.replaceChildren();
+  for (const [term, reading] of Object.entries(rules)) {
+    appendPronunciationRuleRow(term, reading);
+  }
+}
+
+function notifyPronunciationRulesChanged() {
+  for (const chapter of scenarioEditor.querySelectorAll<HTMLFieldSetElement>(':scope > fieldset')) {
+    chapter.dispatchEvent(new Event('pronunciation-rules-changed'));
+  }
+}
+
+function appendPronunciationRuleRow(term = '', reading = '') {
+  const row = document.createElement('div');
+  row.className = 'pronunciation-rule-row';
+  const termLabel = document.createElement('label');
+  termLabel.textContent = '読み替え前';
+  const termInput = document.createElement('input');
+  termInput.className = 'pronunciation-rule-term';
+  termInput.required = true;
+  termInput.maxLength = 80;
+  termInput.autocomplete = 'off';
+  termInput.spellcheck = false;
+  termInput.value = term;
+  termLabel.append(termInput);
+  const readingLabel = document.createElement('label');
+  readingLabel.textContent = '読み';
+  const readingInput = document.createElement('input');
+  readingInput.className = 'pronunciation-rule-reading';
+  readingInput.required = true;
+  readingInput.maxLength = 100;
+  readingInput.autocomplete = 'off';
+  readingInput.value = reading;
+  readingLabel.append(readingInput);
+  const removeButton = document.createElement('button');
+  removeButton.type = 'button';
+  removeButton.className = 'pronunciation-rule-remove';
+  removeButton.setAttribute('aria-label', '読み替えを削除');
+  removeButton.textContent = '削除';
+  row.append(termLabel, readingLabel, removeButton);
+  pronunciationRuleList.append(row);
+  return termInput;
+}
+
+async function loadPronunciationDictionary() {
+  pronunciationSettingsButton.disabled = !window.voicevoxApi;
+  if (!window.voicevoxApi) {
+    pronunciationSettingsStatus.textContent = 'Electronアプリ内で読み替え辞書を設定できます。';
+    pronunciationSettingsStatus.dataset.state = 'error';
+    return;
+  }
+  try {
+    const result = await window.voicevoxApi.getPronunciationRules();
+    if (!result.loaded || !result.rules) throw new Error(result.message ?? '読み替え辞書設定を読み込めません。');
+    currentPronunciationRules = canonicalizePronunciationRules(result.rules);
+    currentPronunciationRulesSignature = result.signature ?? JSON.stringify(currentPronunciationRules);
+    pronunciationSettingsReady = true;
+    pronunciationSettingsStatus.textContent = `${Object.keys(currentPronunciationRules).length}件を全プロジェクト・全章に適用中`;
+    pronunciationSettingsStatus.dataset.state = 'ready';
+    renderPronunciationRuleRows(currentPronunciationRules);
+    notifyPronunciationRulesChanged();
+  } catch (error) {
+    pronunciationSettingsReady = false;
+    pronunciationSettingsStatus.textContent = error instanceof Error
+      ? error.message
+      : '読み替え辞書設定を読み込めません。';
+    pronunciationSettingsStatus.dataset.state = 'error';
+  } finally {
+    refreshVoiceGenerationControls();
+  }
+}
+
+pronunciationSettingsButton.addEventListener('click', () => {
+  renderPronunciationRuleRows(currentPronunciationRules);
+  pronunciationSettingsDialogStatus.textContent = pronunciationSettingsReady
+    ? ''
+    : '保存すると読み替え辞書設定を再作成できます。';
+  pronunciationSettingsDialogStatus.dataset.state = pronunciationSettingsReady ? '' : 'error';
+  pronunciationSettingsDialog.showModal();
+});
+
+pronunciationRuleAddButton.addEventListener('click', () => {
+  appendPronunciationRuleRow().focus();
+});
+
+pronunciationRuleList.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) return;
+  const removeButton = event.target.closest<HTMLButtonElement>('.pronunciation-rule-remove');
+  if (removeButton) removeButton.closest('.pronunciation-rule-row')?.remove();
+});
+
+pronunciationSettingsCancelButton.addEventListener('click', () => {
+  pronunciationSettingsDialog.close();
+});
+
+pronunciationSettingsForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!pronunciationSettingsForm.reportValidity()) return;
+  const rules = new Map<string, string>();
+  for (const row of pronunciationRuleList.querySelectorAll<HTMLDivElement>('.pronunciation-rule-row')) {
+    const term = row.querySelector<HTMLInputElement>('.pronunciation-rule-term')!.value.trim();
+    const reading = row.querySelector<HTMLInputElement>('.pronunciation-rule-reading')!.value.trim();
+    if (rules.has(term)) {
+      pronunciationSettingsDialogStatus.textContent = `「${term}」が重複しています。`;
+      pronunciationSettingsDialogStatus.dataset.state = 'error';
+      row.querySelector<HTMLInputElement>('.pronunciation-rule-term')!.focus();
+      return;
+    }
+    rules.set(term, reading);
+  }
+  if (rules.size > 100) {
+    pronunciationSettingsDialogStatus.textContent = '読み替え辞書は100件以内にしてください。';
+    pronunciationSettingsDialogStatus.dataset.state = 'error';
+    return;
+  }
+
+  pronunciationSettingsSaveButton.disabled = true;
+  pronunciationSettingsDialogStatus.textContent = '辞書を保存しています。';
+  pronunciationSettingsDialogStatus.dataset.state = '';
+  try {
+    const result = await window.voicevoxApi?.setPronunciationRules(
+      canonicalizePronunciationRules(Object.fromEntries(rules)),
+    );
+    if (!result?.saved || !result.rules) {
+      pronunciationSettingsDialogStatus.textContent = result?.message ?? '読み替え辞書を保存できませんでした。';
+      pronunciationSettingsDialogStatus.dataset.state = 'error';
+      return;
+    }
+    currentPronunciationRules = canonicalizePronunciationRules(result.rules);
+    currentPronunciationRulesSignature = result.signature ?? JSON.stringify(currentPronunciationRules);
+    pronunciationSettingsReady = true;
+    pronunciationSettingsStatus.textContent = `${Object.keys(currentPronunciationRules).length}件を全プロジェクト・全章に適用中`;
+    pronunciationSettingsStatus.dataset.state = 'ready';
+    pronunciationSettingsDialog.close();
+    renderPronunciationRuleRows(currentPronunciationRules);
+    notifyPronunciationRulesChanged();
+  } catch {
+    pronunciationSettingsDialogStatus.textContent = '読み替え辞書を保存できませんでした。設定フォルダーのアクセス権を確認してください。';
+    pronunciationSettingsDialogStatus.dataset.state = 'error';
+  } finally {
+    pronunciationSettingsSaveButton.disabled = false;
+    refreshVoiceGenerationControls();
+  }
+});
 
 scenarioAiProviderSelect.addEventListener('change', async () => {
   const requestedProvider = scenarioAiProviderSelect.value as 'copilot' | 'company-api';
@@ -395,6 +751,7 @@ scenarioApiVerifyButton.addEventListener('click', async () => {
 });
 
 void loadScenarioAiProvider();
+void loadPronunciationDictionary();
 
 function updatePlaybackControls() {
   playButton.disabled = playbackLocked || playbackFrame !== null;
@@ -408,6 +765,23 @@ function getSelectedChapterAudio() {
     ?.querySelector<HTMLAudioElement>('.chapter-audio') ?? null;
 }
 
+function getSelectedChapterOpeningDuration() {
+  const controls = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')
+    ?.closest('fieldset')
+    ?.querySelector<HTMLDivElement>('.chapter-audio-controls');
+  const savedDuration = Number(controls?.dataset.openingDurationSeconds);
+  if (Number.isFinite(savedDuration) && savedDuration > 0) return savedDuration;
+  if (!controls?.dataset.audioAsset) return 0;
+  const audioAsset = JSON.parse(controls.dataset.audioAsset) as { openingDurationSeconds?: number };
+  return typeof audioAsset.openingDurationSeconds === 'number' && Number.isFinite(audioAsset.openingDurationSeconds)
+    ? audioAsset.openingDurationSeconds
+    : 0;
+}
+
+function getNarrationTime(videoSeconds: number, audioDuration: number) {
+  return Math.max(0, Math.min(videoSeconds - introSilenceSeconds, audioDuration));
+}
+
 function seekTo(seconds: number) {
   const boundedSeconds = Math.max(0, Math.min(seconds, Number(timeline.max)));
   timeline.value = String(boundedSeconds);
@@ -415,8 +789,19 @@ function seekTo(seconds: number) {
   timeValue.value = `${currentSeconds.toFixed(2)} s`;
   timeValue.textContent = timeValue.value;
   const audio = getSelectedChapterAudio();
-  if (audio?.src && Number.isFinite(audio.duration) && Math.abs(audio.currentTime - currentSeconds) > 0.08) {
-    audio.currentTime = Math.max(0, Math.min(currentSeconds, audio.duration));
+  if (audio?.src && Number.isFinite(audio.duration)) {
+    const narrationTime = getNarrationTime(currentSeconds, audio.duration);
+    if (Math.abs(audio.currentTime - narrationTime) > 0.08) audio.currentTime = narrationTime;
+    const narrationActive = currentSeconds >= introSilenceSeconds
+      && currentSeconds < introSilenceSeconds + audio.duration;
+    if (!narrationActive) {
+      audio.pause();
+    } else if (playbackFrame !== null && audio.paused) {
+      void audio.play().catch(() => {
+        stopPlayback();
+        setResult('章音声を再生できません。音声ファイルを確認してください。');
+      });
+    }
   }
   renderCompositionAt(currentSeconds);
 }
@@ -446,15 +831,8 @@ function startPlayback() {
   if (Number(timeline.value) >= Number(timeline.max)) seekTo(0);
   playbackOriginSeconds = Number(timeline.value);
   playbackStartedAt = performance.now();
-  const audio = getSelectedChapterAudio();
-  if (audio?.src && Number.isFinite(audio.duration)) {
-    audio.currentTime = Math.min(playbackOriginSeconds, audio.duration);
-    void audio.play().catch(() => {
-      stopPlayback();
-      setResult('章音声を再生できません。音声ファイルを確認してください。');
-    });
-  }
   playbackFrame = requestAnimationFrame(advancePlayback);
+  seekTo(playbackOriginSeconds);
   updatePlaybackControls();
 }
 
@@ -584,6 +962,7 @@ diagnosticCopyButton.addEventListener('click', async () => {
 });
 
 videoExportButton.addEventListener('click', async () => {
+  videoExportStatus.dataset.state = 'info';
   if (!window.videoApi) {
     videoExportStatus.textContent = 'MP4書き出しはElectronアプリ内で利用できます。';
     return;
@@ -592,12 +971,9 @@ videoExportButton.addEventListener('click', async () => {
     videoExportStatus.textContent = '先にVRMモデルを読み込んでください。';
     return;
   }
-  if (scenarioReviewState.textContent !== '確認済み') {
-    videoExportStatus.textContent = '章を確認し、プロジェクトを保存してから書き出してください。';
-    return;
-  }
-  if (scenarioHasUnsavedChanges) {
-    videoExportStatus.textContent = '確認済みの変更が未保存です。プロジェクトを保存してから書き出してください。';
+  if (!pronunciationSettingsReady) {
+    videoExportStatus.textContent = '読み替え辞書設定を読み込んでから書き出してください。';
+    pronunciationSettingsButton.focus();
     return;
   }
   const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
@@ -622,10 +998,20 @@ videoExportButton.addEventListener('click', async () => {
     return;
   }
   const audio = getSelectedChapterAudio();
-  const hasSavedAudioAsset = Boolean(selectedChapter?.querySelector<HTMLDivElement>('.chapter-audio-controls')?.dataset.audioAsset);
+  const chapterAudioControls = selectedChapter?.querySelector<HTMLDivElement>('.chapter-audio-controls');
+  const hasSavedAudioAsset = Boolean(chapterAudioControls?.dataset.audioAsset);
+  if (
+    hasSavedAudioAsset
+    && chapterAudioControls?.dataset.pronunciationRulesSignature !== currentPronunciationRulesSignature
+  ) {
+    videoExportStatus.textContent = '読み替え辞書設定が変更されています。現在の設定で章音声を再生成してください。';
+    const audioRegenerateButton = selectedChapter?.querySelector<HTMLButtonElement>('.chapter-audio-generate');
+    (audioRegenerateButton && !audioRegenerateButton.disabled ? audioRegenerateButton : pronunciationSettingsButton).focus();
+    return;
+  }
   if (!selectedChapter || chapterIndex < 0 || !hasSavedAudioAsset || !audio?.src || !Number.isFinite(audio.duration)) {
     const audioStatus = selectedChapter?.querySelector<HTMLSpanElement>('.chapter-audio-status')?.textContent ?? '';
-    videoExportStatus.textContent = audioStatus.includes('読み上げ本文が変更されています')
+    videoExportStatus.textContent = audioStatus.includes('変更されています')
       ? audioStatus
       : '選択した章に保存済み音声がありません。音声を生成して保存してください。';
     const audioRegenerateButton = selectedChapter?.querySelector<HTMLButtonElement>('.chapter-audio-generate');
@@ -663,7 +1049,7 @@ videoExportButton.addEventListener('click', async () => {
     atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
     visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
   }));
-  const executionAtSeconds = Number(selectedChapter.querySelector<HTMLInputElement>('.execution-time')?.value ?? 0);
+  const executionAtSeconds = Number(selectedChapter.querySelector<HTMLInputElement>('.execution-time')?.value ?? DEFAULT_EXECUTION_AT_SECONDS);
   const characterActions = [...selectedChapter.querySelectorAll<HTMLDivElement>('.character-action-row')].map((row) => ({
     atSeconds: Number(row.querySelector<HTMLInputElement>('.character-action-time')!.value),
     action: row.querySelector<HTMLSelectElement>('.character-action-type')!.value as 'explain' | 'attention' | 'happy',
@@ -705,8 +1091,9 @@ videoExportButton.addEventListener('click', async () => {
   const subtitleNarrationHash = selectedChapter.dataset.subtitleNarrationHash;
   if (subtitleNarrationHash) {
     const narrationText = selectedChapter.querySelector<HTMLTextAreaElement>('.chapter-narration')?.value.trim() ?? '';
+    const chapterTitle = selectedChapter.querySelector<HTMLInputElement>('.chapter-title')?.value.trim() ?? '';
     try {
-      const currentSubtitleNarrationHash = await hashNarrationText(narrationText);
+      const currentSubtitleNarrationHash = await hashNarrationText(getChapterSpeechText(chapterTitle, narrationText));
       if (currentSubtitleNarrationHash !== subtitleNarrationHash && !window.confirm(
         '読み上げ本文が変更されています。字幕の表示タイミングを確認しましたか？ OKで書き出し、キャンセルで字幕編集へ戻ります。',
       )) {
@@ -728,9 +1115,67 @@ videoExportButton.addEventListener('click', async () => {
     }
   }
 
+  scenarioEditor.inert = true;
+  scenarioForm.inert = true;
+  videoExportButton.disabled = true;
+  workflowAudioButton.disabled = true;
+  workflowCRunButton.disabled = true;
+  workflowPreviewButton.disabled = true;
+  if (scenarioAutosaveTimer) clearTimeout(scenarioAutosaveTimer);
+  scenarioAutosaveTimer = null;
+  scenarioAutosaveRevision += 1;
+  await scenarioAutosaveQueue;
+  const requestResult = readScenarioRequest();
+  const latestDraft = readScenarioDraft();
+  if (!requestResult.success || !latestDraft) {
+    scenarioEditor.inert = false;
+    scenarioForm.inert = false;
+    refreshChapterWorkflow();
+    setVideoExportStatus('編集中の章または教材概要に入力エラーがあります。内容を修正してください。', 'error');
+    scenarioConfirmButton.focus();
+    return;
+  }
+  if (!window.scenarioApi) {
+    scenarioEditor.inert = false;
+    scenarioForm.inert = false;
+    refreshChapterWorkflow();
+    setVideoExportStatus('プロジェクト保存はElectronアプリ内で利用できます。書き出しを停止しました。', 'error');
+    return;
+  }
+
+  setVideoExportStatus('最新の章内容を保存しています...', 'working');
+  try {
+    const saved = await window.scenarioApi.autoSave(requestResult.data, latestDraft);
+    if (!saved.saved) {
+      scenarioEditor.inert = false;
+      scenarioForm.inert = false;
+      refreshChapterWorkflow();
+      scenarioSaveStatus.textContent = saved.message;
+      scenarioSaveStatus.dataset.state = saved.cancelled ? 'modified' : 'error';
+      setVideoExportStatus(`最新内容を保存できないため書き出しを停止しました。\n${saved.message}`, saved.cancelled ? 'cancelled' : 'error');
+      return;
+    }
+    scenarioDraft = latestDraft;
+    confirmedScenario = structuredClone(latestDraft);
+    scenarioHasUnsavedChanges = false;
+    scenarioReviewState.textContent = '確認済み';
+    scenarioSaveButton.disabled = true;
+    scenarioSaveStatus.textContent = '書き出し前に自動保存済み';
+    scenarioSaveStatus.dataset.state = 'saved';
+    scenarioMessage.textContent = '現在の内容を確認済みとして保存しました。';
+  } catch (error) {
+    scenarioEditor.inert = false;
+    scenarioForm.inert = false;
+    refreshChapterWorkflow();
+    const message = error instanceof Error ? error.message : '保存に失敗しました。';
+    scenarioSaveStatus.textContent = '保存に失敗しました';
+    scenarioSaveStatus.dataset.state = 'error';
+    setVideoExportStatus(`最新内容を保存できないため書き出しを停止しました。\n${message}`, 'error');
+    return;
+  }
+
   stopPlayback();
   setPlaybackLocked(true);
-  scenarioEditor.inert = true;
   timeline.disabled = true;
   fileInput.disabled = true;
   motionInput.disabled = true;
@@ -739,18 +1184,27 @@ videoExportButton.addEventListener('click', async () => {
   sequenceButton.disabled = true;
   benchmarkButton.disabled = true;
   videoExportButton.disabled = true;
+  videoOpenExportButton.hidden = true;
+  videoOpenExportButton.disabled = true;
   videoCancelButton.disabled = true;
-  videoExportStatus.textContent = 'FFmpegと章素材を確認しています...';
+  let exportStage = 'FFmpeg・章素材の確認と保存先の準備';
+  setVideoExportStatus('FFmpegと章素材を確認しています...', 'working');
   try {
     const started = await window.videoApi.startExport(chapterIndex);
     if (!started.started || !started.exportId || !started.frameCount || !started.contentDurationSeconds) {
-      videoExportStatus.textContent = started.message;
+      if (started.cancelled) {
+        setVideoExportStatus(started.message ?? '動画の書き出しをキャンセルしました。', 'cancelled');
+      } else {
+        showVideoExportFailure(exportStage, started.message ?? '書き出しを開始できませんでした。');
+      }
       return;
     }
     const exportId = started.exportId;
     activeVideoExportId = exportId;
     const contentFrames = Math.ceil(started.contentDurationSeconds * 30);
     videoCancelButton.disabled = false;
+    exportStage = 'PNGフレームの生成とFFmpegエンコード';
+    setVideoExportStatus('画面を生成・エンコード中: 0%', 'working');
     for (let frameIndex = 0; frameIndex < started.frameCount; frameIndex += 1) {
       if (activeVideoExportId !== exportId) throw new Error('動画の書き出しを停止しました。');
       const frame = await createVideoFrame(
@@ -763,14 +1217,16 @@ videoExportButton.addEventListener('click', async () => {
       if (!result.written) throw new Error(result.message ?? '動画フレームを書き込めません。');
       if ((frameIndex + 1) % 30 === 0 || frameIndex + 1 === started.frameCount) {
         const percentage = Math.floor((frameIndex + 1) * 100 / started.frameCount);
-        videoExportStatus.textContent = `画面を生成・エンコード中: ${percentage}% (${frameIndex + 1}/${started.frameCount}フレーム)`;
+        setVideoExportStatus(`画面を生成・エンコード中: ${percentage}% (${frameIndex + 1}/${started.frameCount}フレーム)`, 'working');
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
     }
     videoCancelButton.disabled = true;
+    exportStage = 'MP4とSRT字幕の保存';
+    setVideoExportStatus('MP4とSRT字幕を保存しています...', 'working');
     const completed = await window.videoApi.finishExport(exportId);
     activeVideoExportId = null;
-    if (!completed.saved) throw new Error(completed.message);
+    if (!completed.saved) throw new Error(completed.message ?? '動画ファイルを保存できませんでした。');
     const chapterVideoStatus = selectedChapter.querySelector<HTMLSpanElement>('.chapter-video-status');
     if (chapterVideoStatus) {
       chapterVideoStatus.textContent = '動画: 最新';
@@ -778,13 +1234,21 @@ videoExportButton.addEventListener('click', async () => {
       selectedChapter.dispatchEvent(new Event('chapter-video-state-change'));
     }
     videoExportStatus.textContent = `${completed.message} ${completed.path ?? ''}`;
+    setVideoExportStatus(`${completed.message} ${completed.path ?? ''}`, 'success');
+    videoOpenExportButton.hidden = false;
+    videoOpenExportButton.disabled = false;
   } catch (error) {
+    if (error instanceof Error && error.message === '動画の書き出しを停止しました。') {
+      setVideoExportStatus(error.message, 'cancelled');
+    } else {
+      showVideoExportFailure(exportStage, error);
+    }
     const exportId = activeVideoExportId;
     activeVideoExportId = null;
     if (exportId) await window.videoApi.cancelExport(exportId).catch(() => false);
-    videoExportStatus.textContent = error instanceof Error ? error.message : '動画を書き出せませんでした。';
   } finally {
     scenarioEditor.inert = false;
+    scenarioForm.inert = false;
     timeline.disabled = false;
     fileInput.disabled = false;
     motionInput.disabled = !activeVrm;
@@ -795,9 +1259,24 @@ videoExportButton.addEventListener('click', async () => {
     videoExportButton.disabled = false;
     videoCancelButton.disabled = true;
     setPlaybackLocked(false);
-    renderAt(Number(timeline.value));
-    syncCodeStagePreviews(Number(timeline.value));
-    syncSubtitlePreview(Number(timeline.value));
+    renderCompositionAt(Number(timeline.value));
+    refreshChapterWorkflow();
+  }
+});
+
+videoOpenExportButton.addEventListener('click', async () => {
+  if (!window.videoApi) {
+    setVideoExportStatus('MP4を開く操作はElectronアプリ内で利用できます。', 'error');
+    return;
+  }
+  videoOpenExportButton.disabled = true;
+  try {
+    const result = await window.videoApi.openLastExport();
+    setVideoExportStatus(result.message, result.opened ? 'success' : 'error');
+  } catch {
+    setVideoExportStatus('MP4を開けませんでした。ファイルと既定の動画プレーヤーを確認してください。', 'error');
+  } finally {
+    videoOpenExportButton.disabled = false;
   }
 });
 
@@ -807,7 +1286,7 @@ videoCancelButton.addEventListener('click', async () => {
   videoCancelButton.disabled = true;
   activeVideoExportId = null;
   await window.videoApi.cancelExport(exportId);
-  videoExportStatus.textContent = '動画の書き出しを停止しました。';
+  setVideoExportStatus('動画の書き出しを停止しました。', 'cancelled');
 });
 
 voicevoxGenerateButton.addEventListener('click', async () => {
@@ -850,23 +1329,38 @@ voicevoxGenerateButton.addEventListener('click', async () => {
 function getCreditRange() {
   const audioDuration = getSelectedChapterAudio()?.duration;
   if (typeof audioDuration !== 'number' || !Number.isFinite(audioDuration) || audioDuration <= 0) return null;
-  const startSeconds = Math.ceil(audioDuration * 30 - 1e-9) / 30;
+  const startSeconds = Math.ceil((audioDuration + introSilenceSeconds + finalHoldSeconds) * 30 - 1e-9) / 30;
   return { startSeconds, endSeconds: startSeconds + creditDurationSeconds };
+}
+
+function getCodeFullRevealSeconds(selectedChapter: Element | null | undefined) {
+  const codeLineCount = (selectedChapter?.querySelector<HTMLTextAreaElement>('.chapter-code')?.value ?? '').split(/\r?\n/).length;
+  const stages = [...(selectedChapter?.querySelectorAll<HTMLDivElement>('.code-stage-row') ?? [])]
+    .map((row) => ({
+      atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')?.value),
+      visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')?.value),
+    }))
+    .filter((stage) => Number.isFinite(stage.atSeconds) && Number.isFinite(stage.visibleLines))
+    .sort((left, right) => left.atSeconds - right.atSeconds);
+  return stages.find((stage) => stage.visibleLines >= codeLineCount)?.atSeconds
+    ?? stages.at(-1)?.atSeconds
+    ?? 0;
 }
 
 function refreshTimelineMarkers() {
   const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
   const maximumTime = Math.max(Number(timeline.max), 0.001);
+  const narrationStartSeconds = introSilenceSeconds + getSelectedChapterOpeningDuration();
   const markers = [
     ...(selectedChapter?.querySelectorAll<HTMLDivElement>('.subtitle-row') ?? []),
   ].map((row) => ({
     kind: 'subtitle',
-    seconds: Number(row.querySelector<HTMLInputElement>('.subtitle-start')?.value),
+    seconds: Number(row.querySelector<HTMLInputElement>('.subtitle-start')?.value) + introSilenceSeconds,
     label: '字幕',
   })).concat(
     [...(selectedChapter?.querySelectorAll<HTMLDivElement>('.code-stage-row') ?? [])].map((row) => ({
       kind: 'code-stage',
-      seconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')?.value),
+      seconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')?.value) + narrationStartSeconds,
       label: 'コード表示段階',
     })),
     [...(selectedChapter?.querySelectorAll<HTMLDivElement>('.character-action-row') ?? [])].map((row) => {
@@ -874,14 +1368,15 @@ function refreshTimelineMarkers() {
       const actionLabel = { explain: '説明', attention: '注目', happy: '喜び' }[action as 'explain' | 'attention' | 'happy'] ?? '説明';
       return {
         kind: 'character-action',
-        seconds: Number(row.querySelector<HTMLInputElement>('.character-action-time')?.value),
+        seconds: Number(row.querySelector<HTMLInputElement>('.character-action-time')?.value) + narrationStartSeconds,
         label: `動作: ${actionLabel}`,
       };
     }),
   );
   const executionTimeInput = selectedChapter?.querySelector<HTMLInputElement>('.execution-time');
   if (selectedChapter?.querySelector<HTMLInputElement>('.scenario-checkbox input')?.checked && executionTimeInput) {
-    markers.push({ kind: 'execution', seconds: Number(executionTimeInput.value), label: 'C実行結果' });
+    const executionTime = Math.max(Number(executionTimeInput.value), getCodeFullRevealSeconds(selectedChapter));
+    markers.push({ kind: 'execution', seconds: executionTime + narrationStartSeconds, label: 'C実行結果' });
   }
   const creditRange = getCreditRange();
   if (creditRange) markers.push({ kind: 'credit', seconds: creditRange.startSeconds, label: 'クレジット画面' });
@@ -905,15 +1400,22 @@ function refreshTimelineMarkers() {
 
 function refreshTimelineExtent() {
   const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
-  const stageTimes = [...(selectedChapter?.querySelectorAll<HTMLInputElement>('.code-stage-time, .subtitle-end, .execution-time, .character-action-time') ?? [])]
+  const narrationStartSeconds = introSilenceSeconds + getSelectedChapterOpeningDuration();
+  const stageTimes = [...(selectedChapter?.querySelectorAll<HTMLInputElement>('.code-stage-time, .execution-time, .character-action-time') ?? [])]
+    .map((input) => Number(input.value))
+    .filter(Number.isFinite);
+  const subtitleEndTimes = [...(selectedChapter?.querySelectorAll<HTMLInputElement>('.subtitle-end') ?? [])]
     .map((input) => Number(input.value))
     .filter(Number.isFinite);
   const audioDuration = getSelectedChapterAudio()?.duration;
   const creditRange = getCreditRange();
   const maximumTime = Math.max(
     10,
-    ...stageTimes,
-    ...(typeof audioDuration === 'number' && Number.isFinite(audioDuration) ? [audioDuration] : []),
+    ...stageTimes.map((seconds) => seconds + narrationStartSeconds),
+    ...subtitleEndTimes.map((seconds) => seconds + introSilenceSeconds),
+    ...(typeof audioDuration === 'number' && Number.isFinite(audioDuration)
+      ? [introSilenceSeconds + audioDuration + finalHoldSeconds]
+      : []),
     ...(creditRange ? [creditRange.endSeconds] : []),
   );
   timeline.max = String(maximumTime);
@@ -934,24 +1436,37 @@ function syncSubtitlePreview(seconds: number) {
     : [];
   const tolerance = Math.max(0.0001, Number(timeline.step) / 2);
   const activeSubtitle = subtitles.find((subtitle) =>
-    subtitle.text && seconds + tolerance >= subtitle.startSeconds && seconds < subtitle.endSeconds);
+    subtitle.text
+    && seconds + tolerance >= subtitle.startSeconds + introSilenceSeconds
+    && seconds < subtitle.endSeconds + introSilenceSeconds);
   subtitlePreview.textContent = activeSubtitle?.text ?? '';
   subtitlePreview.hidden = !activeSubtitle || !creditPreview.hidden;
 }
 
-function syncCodeStagePreviews(seconds: number) {
+function syncCodeStagePreviews(contentSeconds: number, videoSeconds = contentSeconds + introSilenceSeconds) {
   for (const previewRange of scenarioEditor.querySelectorAll<HTMLInputElement>('.stage-preview-control input')) {
-    previewRange.value = String(seconds);
+    previewRange.value = String(contentSeconds);
     previewRange.dispatchEvent(new Event('input'));
   }
-  syncVideoComposition(seconds);
+  syncVideoComposition(videoSeconds);
 }
 
 function syncVideoComposition(seconds: number) {
   const selectedChapter = scenarioEditor.querySelector<HTMLInputElement>('.chapter-preview-target:checked')?.closest('fieldset');
   const creditRange = getCreditRange();
+  const audioDuration = getSelectedChapterAudio()?.duration;
+  const audioSeconds = typeof audioDuration === 'number' && Number.isFinite(audioDuration)
+    ? getNarrationTime(seconds, audioDuration)
+    : Math.max(0, seconds - introSilenceSeconds);
+  const openingDuration = getSelectedChapterOpeningDuration();
+  const contentSeconds = Math.max(0, audioSeconds - openingDuration);
+  const showingIntro = seconds < introSilenceSeconds;
+  const showingOpening = !showingIntro && audioSeconds < openingDuration;
   const showingCredit = Boolean(creditRange && seconds + 0.0001 >= creditRange.startSeconds && seconds < creditRange.endSeconds);
+  const showingContent = !showingIntro && !showingOpening && !showingCredit;
   creditPreview.hidden = !showingCredit;
+  videoChapterTitlePreview.textContent = selectedChapter?.querySelector<HTMLInputElement>('.chapter-title')?.value ?? '';
+  videoChapterTitlePreview.hidden = !selectedChapter || showingCredit;
   if (showingCredit && selectedChapter) {
     creditPreviewTitle.textContent = selectedChapter.querySelector<HTMLInputElement>('.chapter-title')?.value ?? '';
     const audioAssetJson = selectedChapter.querySelector<HTMLDivElement>('.chapter-audio-controls')?.dataset.audioAsset;
@@ -969,18 +1484,30 @@ function syncVideoComposition(seconds: number) {
       atSeconds: Number(row.querySelector<HTMLInputElement>('.code-stage-time')!.value),
       visibleLines: Number(row.querySelector<HTMLInputElement>('.code-stage-lines')!.value),
     }))
-    .filter((entry) => entry.atSeconds <= seconds + stageTolerance)
+    .filter((entry) => entry.atSeconds <= contentSeconds + stageTolerance)
     .sort((left, right) => left.atSeconds - right.atSeconds)
     .at(-1);
-  const visibleLineCount = stage?.visibleLines ?? 0;
+  const fullCodeAt = getCodeFullRevealSeconds(selectedChapter);
+  const fullCodeIsVisible = contentSeconds + stageTolerance >= fullCodeAt;
+  const visibleLineCount = showingIntro || showingOpening || !stage
+    ? 0
+    : fullCodeIsVisible ? codeLines.length : stage.visibleLines;
   videoCodePreview.textContent = codeLines.slice(0, visibleLineCount).join('\n');
-  videoCodePreview.hidden = showingCredit || videoCodePreview.textContent.length === 0;
+  videoCodePreview.hidden = showingCredit;
 
   const executionResultText = selectedChapter
     ?.querySelector<HTMLTextAreaElement>('.video-execution-result')?.value.trim() ?? '';
-  const executionAtSeconds = Number(selectedChapter?.querySelector<HTMLInputElement>('.execution-time')?.value ?? 0);
-  videoResultPreview.textContent = seconds + stageTolerance >= executionAtSeconds ? executionResultText : '';
-  videoResultPreview.hidden = showingCredit || videoResultPreview.textContent.length === 0;
+  const executionAtSeconds = Number(selectedChapter?.querySelector<HTMLInputElement>('.execution-time')?.value ?? DEFAULT_EXECUTION_AT_SECONDS);
+  const resultAtSeconds = Math.max(executionAtSeconds, fullCodeAt);
+  const showExecutionResult = Boolean(
+    showingContent
+    && fullCodeIsVisible
+    && contentSeconds + stageTolerance >= resultAtSeconds
+    && executionResultText,
+  );
+  videoResultPreview.textContent = showExecutionResult ? executionResultText : '';
+  videoResultHeading.hidden = !showExecutionResult;
+  videoResultPreview.hidden = !showExecutionResult;
 }
 
 function drawVideoTextPanel(text: string, x: number, y: number, width: number, height: number, fontSize: number, align: CanvasTextAlign = 'left', backgroundFill: string | null = 'rgba(16, 27, 25, 0.88)') {
@@ -1019,8 +1546,25 @@ function drawVideoTextPanel(text: string, x: number, y: number, width: number, h
   });
 }
 
-async function drawVideoCodePanel(text: string, x: number, y: number, width: number, height: number) {
+async function drawVideoBoardTitle(text: string, x: number, y: number, width: number) {
   if (!text.trim()) return;
+  videoFrameContext.save();
+  videoFrameContext.font = '600 28px "Yu Gothic UI", sans-serif';
+  videoFrameContext.fillStyle = '#f7f8ee';
+  videoFrameContext.textBaseline = 'middle';
+  videoFrameContext.textAlign = 'center';
+  const maxWidth = width - 84;
+  const characters = [...text];
+  let displayText = text;
+  while (characters.length > 1 && videoFrameContext.measureText(displayText).width > maxWidth) {
+    characters.pop();
+    displayText = `${characters.join('')}…`;
+  }
+  videoFrameContext.fillText(displayText, x + width / 2, y + 55, maxWidth);
+  videoFrameContext.restore();
+}
+
+async function drawVideoCodePanel(title: string, text: string, x: number, y: number, width: number, height: number) {
   const image = await blackboardImageReady;
   const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
   const imageWidth = image.naturalWidth * scale;
@@ -1033,7 +1577,20 @@ async function drawVideoCodePanel(text: string, x: number, y: number, width: num
   videoFrameContext.fillStyle = 'rgba(0, 16, 11, 0.10)';
   videoFrameContext.fillRect(x, y, width, height);
   videoFrameContext.restore();
-  drawVideoTextPanel(text, x, y, width, height - 60, 22, 'left', null);
+  drawVideoBoardTitle(title, x, y, width);
+  drawVideoTextPanel(text, x + 21, y + 100, width - 21, height - 160, 24, 'left', null);
+}
+
+function drawVideoResultPanel(text: string, x: number, y: number, width: number, height: number) {
+  if (!text.trim()) return;
+  videoFrameContext.save();
+  videoFrameContext.font = '700 26px "Yu Gothic UI", sans-serif';
+  videoFrameContext.fillStyle = '#18312d';
+  videoFrameContext.textBaseline = 'top';
+  videoFrameContext.textAlign = 'left';
+  videoFrameContext.fillText('実行結果', x + 20, y - 40, width - 40);
+  videoFrameContext.restore();
+  drawVideoTextPanel(text, x, y, width, height, 20);
 }
 
 function drawCreditFrame(chapterTitle: string, creditText: string) {
@@ -1075,8 +1632,15 @@ async function createVideoFrame(frameIndex: number, contentFrames: number, chapt
       videoFrameContext.stroke();
     }
     videoFrameContext.drawImage(canvas, 0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
-    await drawVideoCodePanel(videoCodePreview.textContent ?? '', 48, 54, 820, 600);
-    drawVideoTextPanel(videoResultPreview.textContent ?? '', 48, 680, 820, 188, 20);
+    await drawVideoCodePanel(
+      videoChapterTitlePreview.hidden ? '' : videoChapterTitlePreview.textContent ?? '',
+      videoCodePreview.textContent ?? '',
+      48,
+      54,
+      1230,
+      900,
+    );
+    drawVideoResultPanel(videoResultPreview.textContent ?? '', 1320, 80, 552, 240);
     drawVideoTextPanel(subtitlePreview.hidden ? '' : subtitlePreview.textContent ?? '', 96, 920, 1728, 110, 40, 'center');
   }
   const blob = await new Promise<Blob>((resolve, reject) => {
@@ -1090,7 +1654,9 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     __cvideoTestCreateVideoFrame?: typeof createVideoFrame;
     __cvideoTestGetModelRotation?: () => number;
     __cvideoTestGetModelScreenX?: () => number;
+    __cvideoTestGetModelScreenBoundsX?: () => { left: number; right: number };
     __cvideoTestGetCameraFrontOffset?: () => number;
+    __cvideoTestGetHeadAndKneeScreenY?: () => { head: number | null; leftKnee: number | null; rightKnee: number | null };
     __cvideoTestGetArmHandHeights?: () => {
       baseline: { left: number | null; right: number | null };
       current: { left: number | null; right: number | null };
@@ -1098,7 +1664,7 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     __cvideoTestGetCharacterPose?: () => { head: [number, number, number] | null; happy: number | null; blink: number | null };
     __cvideoTestGetRandomExpressionAt?: (seconds: number) => { happy: number; blink: number };
     __cvideoTestGetCharacterActionAt?: typeof getCharacterActionAt;
-    __cvideoTestReadExportText?: () => { code: string; result: string; subtitle: string };
+    __cvideoTestReadExportText?: () => { title: string; code: string; result: string; subtitle: string };
     __cvideoTestLoadScenarioDraft?: (draft: ScenarioDraft) => void;
   };
   testWindow.__cvideoTestCreateVideoFrame = createVideoFrame;
@@ -1107,10 +1673,37 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     if (!activeVrm) return Number.NaN;
     return new THREE.Box3().setFromObject(activeVrm.scene).getCenter(new THREE.Vector3()).project(camera).x;
   };
+  testWindow.__cvideoTestGetModelScreenBoundsX = () => {
+    if (!activeVrm) return { left: Number.NaN, right: Number.NaN };
+    const bounds = new THREE.Box3().setFromObject(activeVrm.scene);
+    const projectedX = [
+      new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
+      new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+      new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
+      new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+      new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
+      new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+      new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+      new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+    ].map((corner) => corner.project(camera).x);
+    return { left: Math.min(...projectedX), right: Math.max(...projectedX) };
+  };
   testWindow.__cvideoTestGetCameraFrontOffset = () => {
     if (!activeVrm) return Number.NaN;
     const modelCenter = new THREE.Box3().setFromObject(activeVrm.scene).getCenter(new THREE.Vector3());
     return camera.position.z - modelCenter.z;
+  };
+  testWindow.__cvideoTestGetHeadAndKneeScreenY = () => {
+    if (!activeVrm) return { head: null, leftKnee: null, rightKnee: null };
+    const getBoneScreenY = (boneName: 'head' | 'leftLowerLeg' | 'rightLowerLeg') => {
+      const bone = activeVrm?.humanoid.getNormalizedBoneNode(boneName);
+      return bone ? bone.getWorldPosition(new THREE.Vector3()).project(camera).y : null;
+    };
+    return {
+      head: getBoneScreenY('head'),
+      leftKnee: getBoneScreenY('leftLowerLeg'),
+      rightKnee: getBoneScreenY('rightLowerLeg'),
+    };
   };
   testWindow.__cvideoTestGetArmHandHeights = () => {
     activeVrm?.scene.updateMatrixWorld(true);
@@ -1141,6 +1734,7 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('cvid
     renderScenarioDraft(scenarioDraft);
   };
   testWindow.__cvideoTestReadExportText = () => ({
+    title: videoChapterTitlePreview.hidden ? '' : videoChapterTitlePreview.textContent ?? '',
     code: videoCodePreview.textContent ?? '',
     result: videoResultPreview.textContent ?? '',
     subtitle: subtitlePreview.hidden ? '' : subtitlePreview.textContent ?? '',
@@ -1204,9 +1798,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     previewTarget.addEventListener('change', () => {
       stopPlayback();
       for (const audio of scenarioEditor.querySelectorAll<HTMLAudioElement>('.chapter-audio')) audio.pause();
+      moveVoicevoxPanelToSelectedChapter();
       refreshTimelineExtent();
       seekTo(Number(timeline.value));
       syncSubtitlePreview(Number(timeline.value));
+      refreshChapterWorkflow();
     });
     previewTargetLabel.append(previewTarget, document.createTextNode('この章をプレビュー'));
     fieldset.append(previewTargetLabel);
@@ -1243,6 +1839,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     narration.required = true;
     narration.rows = 6;
     fieldset.append(makeField('読み上げ本文', narration));
+    const narrationTimingStatus = document.createElement('output');
+    narrationTimingStatus.className = 'narration-timing-status';
+    narrationTimingStatus.setAttribute('role', 'status');
+    narrationTimingStatus.setAttribute('aria-live', 'polite');
+    fieldset.append(narrationTimingStatus);
 
     const chapterAudioControls = document.createElement('div');
     chapterAudioControls.className = 'chapter-audio-controls';
@@ -1250,7 +1851,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     chapterAudioGenerate.type = 'button';
     chapterAudioGenerate.className = 'chapter-audio-generate';
     chapterAudioGenerate.textContent = 'この章の音声を生成／再生成';
-    chapterAudioGenerate.disabled = voicevoxStyle.disabled || !isVoiceStyleApproved() || narration.value.trim().length > 1000;
+    chapterAudioGenerate.disabled = Boolean(getChapterAudioGenerationBlocker(narration, title));
+    const chapterAudioRequirements = document.createElement('span');
+    chapterAudioRequirements.className = 'chapter-audio-requirements';
+    chapterAudioRequirements.textContent = getChapterAudioGenerationBlocker(narration, title)
+      ?? '条件を満たしています。音声を生成／再生成できます。';
     const chapterAudioStatus = document.createElement('span');
     chapterAudioStatus.className = 'chapter-audio-status';
     chapterAudioStatus.setAttribute('role', 'status');
@@ -1262,18 +1867,56 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     let chapterAudioAsset = chapter.audioAsset ?? null;
     let hasStoredAudioToReplace = Boolean(chapter.audioAsset);
     let savedAudioNarration: string | null = chapter.audioAsset ? chapter.narration : null;
+    let savedAudioTitle: string | null = chapter.audioAsset ? chapter.title : null;
+    let savedAudioPronunciationSignature: string | null = chapter.audioAsset
+      ? currentPronunciationRulesSignature
+      : null;
+    const refreshNarrationTimingStatus = () => {
+      const targetMinutes = Number(minutes.value);
+      const targetSeconds = targetMinutes * 60;
+      const characterCount = [...narration.value.trim()].length;
+      const estimateSeconds = estimateNarrationDurationSeconds(narration.value)
+        + estimateNarrationDurationSeconds(getChapterOpeningText(title.value));
+      const targetRange = Number.isFinite(targetMinutes) && targetMinutes > 0
+        ? getTargetNarrationCharacterRange(targetMinutes)
+        : null;
+      const estimate = `本文 ${characterCount}文字・冒頭挨拶を含む推定 ${estimateSeconds.toFixed(1)}秒（毎秒${NARRATION_CHARACTERS_PER_SECOND}文字）`;
+      const target = targetRange
+        ? `目標 ${targetMinutes}分 / 本文目安 ${targetRange.minimum}〜${targetRange.maximum}文字`
+        : '目標時間を確認してください。';
+      const actualSeconds = chapterAudioAsset?.durationSeconds;
+      const actual = actualSeconds === undefined ? '' : ` / 音声実尺 ${actualSeconds.toFixed(1)}秒`;
+      const outsideTolerance = actualSeconds !== undefined
+        && Number.isFinite(targetSeconds)
+        && targetSeconds > 0
+        && Math.abs(actualSeconds - targetSeconds) / targetSeconds > TARGET_DURATION_TOLERANCE_RATIO;
+      narrationTimingStatus.textContent = `${estimate} / ${target}${actual}${outsideTolerance
+        ? '。目標との差が±20%を超えています。本文の短縮・話速調整・目標時間変更を検討してください。'
+        : ''}`;
+      narrationTimingStatus.dataset.state = outsideTolerance ? 'warning' : 'ready';
+    };
+    narration.addEventListener('input', refreshNarrationTimingStatus);
+    minutes.addEventListener('input', refreshNarrationTimingStatus);
+    refreshNarrationTimingStatus();
     let subtitleNarrationHash = chapter.subtitleNarrationHash ?? null;
     let generatedSubtitlePendingSave = false;
     if (subtitleNarrationHash) fieldset.dataset.subtitleNarrationHash = subtitleNarrationHash;
     let pendingAudioSave: {
       audio: Uint8Array;
       narration: string;
+      title: string;
+      openingText: string;
+      openingDurationSeconds: number;
+      pronunciationRulesSignature: string;
       styleId: number;
       subtitles: { startSeconds: number; endSeconds: number; text: string }[];
       mouthTimeline: MouthShape[];
       speakerName: string;
     } | null = null;
-    if (chapterAudioAsset) chapterAudioControls.dataset.audioAsset = JSON.stringify(chapterAudioAsset);
+    if (chapterAudioAsset) {
+      chapterAudioControls.dataset.audioAsset = JSON.stringify(chapterAudioAsset);
+      chapterAudioControls.dataset.openingDurationSeconds = String(chapterAudioAsset.openingDurationSeconds);
+    }
     const setChapterAudioSource = (audio: Uint8Array) => {
       if (chapterAudioUrl) URL.revokeObjectURL(chapterAudioUrl);
       const audioBuffer = new ArrayBuffer(audio.byteLength);
@@ -1284,18 +1927,33 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       chapterAudio.load();
     };
     narration.addEventListener('input', () => {
-      chapterAudioGenerate.disabled = voicevoxStyle.disabled || !isVoiceStyleApproved() || narration.value.trim().length > 1000;
+      refreshVoiceGenerationControls();
       if (chapterAudioAsset || chapterAudioUrl) {
         chapterAudioAsset = null;
         delete chapterAudioControls.dataset.audioAsset;
+        delete chapterAudioControls.dataset.pronunciationRulesSignature;
         chapterAudioStatus.textContent = '読み上げ本文が変更されています。音声を再生成してください。';
       }
       refreshChapterMaterialStatus();
       void refreshSubtitleSourceStatus();
     });
+    title.addEventListener('input', () => {
+      refreshVoiceGenerationControls();
+      refreshNarrationTimingStatus();
+      if (chapterAudioAsset || chapterAudioUrl) {
+        chapterAudioAsset = null;
+        delete chapterAudioControls.dataset.audioAsset;
+        delete chapterAudioControls.dataset.pronunciationRulesSignature;
+        chapterAudioStatus.textContent = '章タイトルが変更されています。冒頭の挨拶音声を再生成してください。';
+      }
+      refreshChapterMaterialStatus();
+      void refreshSubtitleSourceStatus();
+      refreshTimelineExtent();
+    });
     chapterAudio.addEventListener('loadedmetadata', async () => {
       const durationSeconds = chapterAudio.duration;
       refreshTimelineExtent();
+      refreshNarrationTimingStatus();
       if (!pendingAudioSave) {
         chapterAudioStatus.textContent = `保存済み音声（${durationSeconds.toFixed(2)}秒）を読み込みました。`;
         refreshChapterMaterialStatus();
@@ -1303,24 +1961,43 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       }
       const pending = pendingAudioSave;
       pendingAudioSave = null;
-      if (narration.value.trim() !== pending.narration) {
-        chapterAudioStatus.textContent = '読み上げ本文が変更されています。音声を再生成してください。';
+      if (narration.value.trim() !== pending.narration || title.value.trim() !== pending.title) {
+        chapterAudioStatus.textContent = '章タイトルまたは読み上げ本文が変更されています。音声を再生成してください。';
         refreshChapterMaterialStatus();
         return;
       }
-      const subtitlesApplied = applyGeneratedSubtitles(pending.subtitles);
+      if (pending.pronunciationRulesSignature !== currentPronunciationRulesSignature) {
+        chapterAudioStatus.textContent = '音声生成中に読み替え辞書が変更されました。現在の設定で音声を再生成してください。';
+        refreshChapterMaterialStatus();
+        return;
+      }
+      const subtitleRefresh = applyGeneratedSubtitles(
+        pending.subtitles,
+        durationSeconds,
+        pending.openingDurationSeconds,
+      );
+      if (subtitleRefresh === 'failed') {
+        chapterAudioStatus.textContent = '手動字幕を新しい音声に合わせて配置できません。字幕数を減らすか、字幕を置き換えてから再生成してください。新しい音声は保存していません。';
+        refreshChapterMaterialStatus();
+        return;
+      }
       try {
         const result = await window.voicevoxApi?.saveChapterAudio(
           index,
           pending.audio,
           durationSeconds,
+          pending.openingText,
+          pending.openingDurationSeconds,
           pending.styleId,
           pending.narration,
           pending.speakerName,
           pending.mouthTimeline,
+          pending.pronunciationRulesSignature,
         );
         if (!result?.saved || !result.audioAsset) {
-          const subtitleMessage = subtitlesApplied ? `字幕を${pending.subtitles.length}件設定しました。` : '';
+          const subtitleMessage = subtitleRefresh === 'replaced'
+            ? `字幕を${pending.subtitles.length}件設定しました。`
+            : subtitleRefresh === 'retimed' ? '手動字幕の本文を保持し、新しい音声に合わせて時刻を更新しました。' : '';
           chapterAudioStatus.textContent = `${result?.message ?? '音声をプロジェクトへ保存できませんでした。'} 試聴はできます。 ${subtitleMessage}`;
           refreshChapterMaterialStatus();
           return;
@@ -1328,11 +2005,17 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         chapterAudioAsset = result.audioAsset;
         hasStoredAudioToReplace = true;
         savedAudioNarration = pending.narration;
+        savedAudioTitle = pending.title;
+        savedAudioPronunciationSignature = pending.pronunciationRulesSignature;
         chapterAudioControls.dataset.audioAsset = JSON.stringify(result.audioAsset);
-        const subtitleMessage = subtitlesApplied
+        chapterAudioControls.dataset.pronunciationRulesSignature = pending.pronunciationRulesSignature;
+        chapterAudioControls.dataset.openingDurationSeconds = String(result.audioAsset.openingDurationSeconds);
+        refreshNarrationTimingStatus();
+        const subtitleMessage = subtitleRefresh === 'replaced'
           ? `字幕を${pending.subtitles.length}件設定しました。`
-          : pending.subtitles.length > 0 ? '既存字幕を保持しました。' : '';
-        if (subtitlesApplied) {
+          : subtitleRefresh === 'retimed' ? '手動字幕の本文を保持し、新しい音声に合わせて時刻を更新しました。'
+            : pending.subtitles.length > 0 ? '既存字幕を保持しました。' : '';
+        if (subtitleRefresh === 'replaced' || subtitleRefresh === 'retimed') {
           subtitleNarrationHash = result.audioAsset.narrationHash;
           fieldset.dataset.subtitleNarrationHash = subtitleNarrationHash;
           generatedSubtitlePendingSave = false;
@@ -1352,14 +2035,15 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     });
     chapterAudio.addEventListener('timeupdate', () => {
       if (getSelectedChapterAudio() === chapterAudio && !chapterAudio.paused && playbackFrame === null) {
-        seekTo(chapterAudio.currentTime);
+        seekTo(introSilenceSeconds + chapterAudio.currentTime);
       }
     });
     chapterAudioGenerate.addEventListener('click', async () => {
       const styleId = Number(voicevoxStyle.value);
       const text = narration.value.trim();
-      if (!window.voicevoxApi || !text || text.length > 1000 || !Number.isSafeInteger(styleId)) {
-        chapterAudioStatus.textContent = 'Engine接続、話者・スタイル、本文（1000文字以内）を確認してください。';
+      const chapterTitle = title.value.trim();
+      if (!window.voicevoxApi || !text || text.length > 10000 || !chapterTitle || !Number.isSafeInteger(styleId)) {
+        chapterAudioStatus.textContent = 'Engine接続、話者・スタイル、章タイトル、本文（10,000文字以内）を確認してください。';
         return;
       }
       const selectedOption = voicevoxStyle.selectedOptions[0];
@@ -1378,14 +2062,26 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       chapterAudioGenerate.disabled = true;
       chapterAudioStatus.textContent = 'VOICEVOXで章の音声を生成しています...';
       try {
-        const result = await window.voicevoxApi.synthesize(text, styleId);
-        if (!result.generated || !result.audio) {
+        const openingText = getChapterOpeningText(chapterTitle);
+        const result = await window.voicevoxApi.synthesize(text, styleId, openingText);
+        if (
+          !result.generated
+          || !result.audio
+          || typeof result.openingDurationSeconds !== 'number'
+          || !Number.isFinite(result.openingDurationSeconds)
+          || result.openingDurationSeconds <= 0
+          || typeof result.pronunciationRulesSignature !== 'string'
+        ) {
           chapterAudioStatus.textContent = result.message ?? '章の音声を生成できませんでした。';
           return;
         }
         pendingAudioSave = {
           audio: result.audio,
           narration: text,
+          title: chapterTitle,
+          openingText,
+          openingDurationSeconds: result.openingDurationSeconds,
+          pronunciationRulesSignature: result.pronunciationRulesSignature,
           styleId,
           subtitles: result.subtitles ?? [],
           mouthTimeline: (result.mouthTimeline ?? []) as MouthShape[],
@@ -1399,7 +2095,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         refreshVoiceGenerationControls();
       }
     });
-    chapterAudioControls.append(chapterAudioGenerate, chapterAudioStatus, chapterAudio);
+    chapterAudioControls.append(chapterAudioGenerate, chapterAudioStatus, chapterAudioRequirements, chapterAudio);
     fieldset.append(chapterAudioControls);
 
     const subtitleEditor = document.createElement('div');
@@ -1444,11 +2140,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         return;
       }
       try {
-        const currentHash = await hashNarrationText(narration.value.trim());
+        const currentHash = await hashNarrationText(getChapterSpeechText(title.value, narration.value));
         if (revision !== subtitleStatusRevision) return;
         const isStale = currentHash !== subtitleNarrationHash;
         subtitleSourceStatus.textContent = isStale
-          ? '字幕タイミング: 要確認（読み上げ本文が変更されています）'
+          ? '字幕タイミング: 要確認（章タイトルまたは読み上げ本文が変更されています）'
           : '字幕タイミング: 本文と一致';
         subtitleSourceStatus.dataset.state = isStale ? 'stale' : 'ready';
       } catch {
@@ -1508,20 +2204,48 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       subtitleList.append(row);
       subtitleExportButton.disabled = false;
     };
-    const applyGeneratedSubtitles = (subtitles: { startSeconds: number; endSeconds: number; text: string }[]) => {
-      if (subtitles.length === 0) return false;
-      if (
-        subtitleList.querySelector('.subtitle-row')
-        && !window.confirm('音声から作成した字幕で現在の字幕を置き換えますか？')
-      ) return false;
+    const applyGeneratedSubtitles = (
+      subtitles: { startSeconds: number; endSeconds: number; text: string }[],
+      audioDurationSeconds: number,
+      openingDurationSeconds: number,
+    ): 'replaced' | 'retimed' | 'failed' | null => {
+      if (subtitles.length === 0) return null;
+      const sourceSubtitles = readSubtitleRows();
+      const sourceCodeStages = readStageRows();
+      const hasExistingSubtitles = sourceSubtitles.length > 0;
+      let nextSubtitles = subtitles;
+      let refreshMode: 'replaced' | 'retimed' = 'replaced';
+      if (hasExistingSubtitles && !window.confirm(
+        '音声から作成した字幕へ置き換えますか？ キャンセルすると手動字幕の本文を保持し、新しい音声に合わせて時刻を再生成します。',
+      )) {
+        const retimed = retimeSubtitlesForAudio(sourceSubtitles, subtitles, audioDurationSeconds);
+        if (!retimed) return 'failed';
+        nextSubtitles = retimed;
+        refreshMode = 'retimed';
+      }
       subtitleList.replaceChildren();
-      subtitles.forEach(addSubtitleRow);
+      nextSubtitles.forEach(addSubtitleRow);
+      const retimedCodeStages = retimeCodeStagesForAudio(
+        sourceCodeStages,
+        sourceSubtitles,
+        nextSubtitles,
+        Number.isFinite(Number(chapterAudioControls.dataset.openingDurationSeconds))
+          ? Number(chapterAudioControls.dataset.openingDurationSeconds)
+          : chapterAudioAsset?.openingDurationSeconds ?? 0,
+        openingDurationSeconds,
+        getCodeLineCount(),
+      );
+      if (retimedCodeStages) {
+        stageList.replaceChildren();
+        retimedCodeStages.forEach(addStageRow);
+        refreshStagePreview();
+      }
       generatedSubtitlePendingSave = true;
       markScenarioAsUnconfirmed();
       void refreshSubtitleSourceStatus();
       refreshTimelineExtent();
       syncSubtitlePreview(Number(timeline.value));
-      return true;
+      return refreshMode;
     };
     for (const subtitle of chapter.subtitles ?? []) addSubtitleRow(subtitle);
     subtitleAddButton.addEventListener('click', () => {
@@ -1779,9 +2503,14 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     executionTime.step = '0.1';
     executionTime.required = true;
     executionTime.className = 'execution-time';
-    executionTime.value = String(chapter.executionAtSeconds ?? 0);
+    executionTime.value = String(chapter.executionResult && chapter.executionAtSeconds === 0
+      ? DEFAULT_EXECUTION_AT_SECONDS
+      : chapter.executionAtSeconds ?? DEFAULT_EXECUTION_AT_SECONDS);
     executionTime.disabled = !runCode.checked;
-    fieldset.append(makeField('C実行結果の表示時刻（秒）', executionTime));
+    fieldset.append(makeField('C実行結果を表示する最短時刻（読み上げ開始からの秒）', executionTime));
+    const executionTimeHint = document.createElement('small');
+    executionTimeHint.textContent = '動画では冒頭2秒の無音後を基準とし、コード全体が表示された後に実行結果を表示します。';
+    fieldset.append(executionTimeHint);
     executionTime.addEventListener('input', refreshTimelineExtent);
 
     const runInput = document.createElement('textarea');
@@ -1792,7 +2521,12 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     runInput.className = 'code-editor c-run-input';
     fieldset.append(makeField('標準入力', runInput));
     const refreshChapterMaterialStatus = () => {
-      const audioIsStale = savedAudioNarration !== null && narration.value !== savedAudioNarration;
+      const audioIsStale = savedAudioNarration !== null
+        && (
+          narration.value.trim() !== savedAudioNarration
+          || title.value.trim() !== savedAudioTitle
+          || savedAudioPronunciationSignature !== currentPronunciationRulesSignature
+        );
       const audioState = audioIsStale
         ? '音声: 要更新'
         : chapterAudioControls.dataset.audioAsset
@@ -1818,6 +2552,7 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         || chapterVideoStatus.dataset.state !== 'ready'
         || (runCode.checked && (!savedResult || executionIsStale || savedResult.status !== 'success'))
         ? 'needs-attention' : 'ready';
+      refreshChapterWorkflow();
     };
     fieldset.addEventListener('chapter-video-state-change', refreshChapterMaterialStatus);
     const markChapterVideoStale = () => {
@@ -1830,12 +2565,17 @@ function renderScenarioDraft(draft: ScenarioDraft) {
     fieldset.addEventListener('click', (event) => {
       if (event.target instanceof Element && event.target.closest('button')) markChapterVideoStale();
     });
+    fieldset.addEventListener('pronunciation-rules-changed', () => {
+      void refreshSubtitleSourceStatus();
+      markChapterVideoStale();
+    });
     refreshChapterMaterialStatus();
 
     const executionControls = document.createElement('div');
     executionControls.className = 'execution-controls';
     const executeButton = document.createElement('button');
     executeButton.type = 'button';
+    executeButton.className = 'c-execute-button';
     executeButton.textContent = 'コンパイル・実行';
     executeButton.disabled = !chapter.runCode || chapter.codeExample === null;
     const stopButton = document.createElement('button');
@@ -1911,6 +2651,11 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       refreshChapterMaterialStatus();
     });
     executeButton.addEventListener('click', async () => {
+      if (!confirmedScenario) {
+        executionStatus.textContent = '実行前にシナリオを確認してください。';
+        scenarioConfirmButton.focus();
+        return;
+      }
       if (!window.cProgramApi) {
         executionStatus.textContent = 'Cコード実行はElectronアプリ内で利用できます。';
         return;
@@ -1939,6 +2684,10 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           sourceCode: code.value,
           sourceInput: runInput.value,
         };
+        if (Number(executionTime.value) === 0) {
+          executionTime.value = String(DEFAULT_EXECUTION_AT_SECONDS);
+          refreshTimelineExtent();
+        }
         fieldset.dataset.executionResult = JSON.stringify(executionResult);
         videoExecutionResult.value = executionResult.videoText;
         markScenarioAsUnconfirmed();
@@ -1950,8 +2699,9 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       } finally {
         removeOutputListener();
         activeExecutionId = null;
-        executeButton.disabled = !runCode.checked || code.value.trim().length === 0;
+        executeButton.disabled = !confirmedScenario || !runCode.checked || code.value.trim().length === 0;
         stopButton.disabled = true;
+        refreshChapterWorkflow();
       }
     });
     stopButton.addEventListener('click', () => {
@@ -1965,7 +2715,10 @@ function renderScenarioDraft(draft: ScenarioDraft) {
         if (
           !storedAudio
           || storedAudio.audioAsset.narrationHash !== chapter.audioAsset?.narrationHash
+          || storedAudio.pronunciationRulesSignature !== currentPronunciationRulesSignature
           || narration.value !== chapter.narration
+          || title.value !== chapter.title
+          || storedAudio.audioAsset.openingDurationSeconds <= 0
         ) {
           chapterAudioAsset = null;
           delete chapterAudioControls.dataset.audioAsset;
@@ -1974,6 +2727,8 @@ function renderScenarioDraft(draft: ScenarioDraft) {
           return;
         }
         chapterAudioAsset = storedAudio.audioAsset;
+        savedAudioPronunciationSignature = storedAudio.pronunciationRulesSignature;
+        chapterAudioControls.dataset.pronunciationRulesSignature = storedAudio.pronunciationRulesSignature;
         setChapterAudioSource(storedAudio.audio);
       }).catch(() => {
         chapterAudioStatus.textContent = '保存済み音声を読み込めません。再生成してください。';
@@ -1981,12 +2736,13 @@ function renderScenarioDraft(draft: ScenarioDraft) {
       });
     }
   });
+  moveVoicevoxPanelToSelectedChapter();
   refreshTimelineExtent();
-  syncCodeStagePreviews(Number(timeline.value));
-  syncSubtitlePreview(Number(timeline.value));
+  renderCompositionAt(Number(timeline.value));
   chapterListActions.hidden = false;
   chapterAddButton.disabled = draft.chapters.length >= 12;
   scenarioConfirmButton.disabled = false;
+  refreshChapterWorkflow();
 }
 
 function readScenarioDraft(): ScenarioDraft | null {
@@ -2057,6 +2813,8 @@ function markScenarioAsUnconfirmed() {
   scenarioSaveButton.disabled = true;
   scenarioSaveStatus.textContent = '未保存の変更';
   scenarioSaveStatus.dataset.state = 'modified';
+  refreshVoiceGenerationControls();
+  refreshChapterWorkflow();
   scheduleScenarioAutosave();
 }
 
@@ -2123,7 +2881,7 @@ function createBlankChapter(targetMinutes: number): ScenarioDraft['chapters'][nu
     audioAsset: null,
     executionResult: null,
     runCode: false,
-    executionAtSeconds: 0,
+    executionAtSeconds: DEFAULT_EXECUTION_AT_SECONDS,
   };
 }
 
@@ -2185,8 +2943,14 @@ scenarioEditor.addEventListener('click', (event) => {
 });
 
 scenarioForm.addEventListener('input', markScenarioAsUnconfirmed);
-scenarioEditor.addEventListener('input', markScenarioAsUnconfirmed);
-scenarioEditor.addEventListener('change', markScenarioAsUnconfirmed);
+scenarioEditor.addEventListener('input', (event) => {
+  if (event.target instanceof Element && event.target.closest('#voicevox-panel')) return;
+  markScenarioAsUnconfirmed();
+});
+scenarioEditor.addEventListener('change', (event) => {
+  if (event.target instanceof Element && event.target.closest('#voicevox-panel')) return;
+  markScenarioAsUnconfirmed();
+});
 scenarioEditor.addEventListener('input', () => syncVideoComposition(Number(timeline.value)));
 scenarioEditor.addEventListener('change', () => syncVideoComposition(Number(timeline.value)));
 
@@ -2214,11 +2978,21 @@ scenarioForm.addEventListener('submit', async (event) => {
 
   scenarioGenerateButton.disabled = true;
   scenarioConfirmButton.disabled = true;
-  scenarioMessage.textContent = scenarioAiProvider === 'company-api'
+  const generationMessage = scenarioAiProvider === 'company-api'
     ? '会社APIでシナリオを生成しています...'
     : 'Copilot SDKでシナリオを生成しています...';
+  scenarioMessage.textContent = generationMessage;
   scenarioReviewState.textContent = '生成中';
   try {
+    scenarioMessage.textContent = '新規プロジェクトの保存先を確認しています...';
+    const preparation = await window.scenarioApi.prepareNewProject();
+    if (!preparation.prepared) {
+      scenarioReviewState.textContent = scenarioDraft ? '下書き保持中' : '未生成';
+      scenarioConfirmButton.disabled = !scenarioDraft;
+      scenarioMessage.textContent = preparation.message ?? '保存先を設定できませんでした。';
+      return;
+    }
+    scenarioMessage.textContent = generationMessage;
     const outcome = await window.scenarioApi.generate(inputResult.data, scenarioDraft);
     if (outcome.status === 'failed') {
       scenarioDraft = outcome.draft;
@@ -2240,6 +3014,19 @@ scenarioForm.addEventListener('submit', async (event) => {
     scenarioMessage.textContent = inputResult.data.subtitleMotionMode === 'automatic'
       ? '字幕とキャラクター動作を自動設定しました。字幕時刻は仮見積もりです。音声生成後、実測字幕への置き換えを選べます。生成案を確認してから内容を確認してください。'
       : '生成案を確認し、必要に応じて編集してから内容を確認してください。';
+    if (preparation.newProject) {
+      const saved = await window.scenarioApi.autoSave(inputResult.data, outcome.draft);
+      if (saved.saved) {
+        scenarioHasUnsavedChanges = false;
+        scenarioSaveStatus.textContent = '下書きを自動保存済み（未確認）';
+        scenarioSaveStatus.dataset.state = 'saved';
+        scenarioMessage.textContent += ' 新規プロジェクトの保存先を設定し、未確認の下書きを自動保存しました。';
+      } else {
+        scenarioSaveStatus.textContent = saved.message;
+        scenarioSaveStatus.dataset.state = 'error';
+        scenarioMessage.textContent += ` 下書きを保存できませんでした: ${saved.message}`;
+      }
+    }
     scenarioGenerateButton.textContent = '再生成';
   } catch {
     scenarioReviewState.textContent = scenarioDraft ? '下書き保持中' : '生成失敗';
@@ -2261,9 +3048,12 @@ scenarioConfirmButton.addEventListener('click', () => {
   confirmedScenario = structuredClone(parsedDraft);
   scenarioHasUnsavedChanges = true;
   scenarioReviewState.textContent = '確認済み';
-  scenarioMessage.textContent = 'この内容を確認済みにしました。プロジェクト保存はまだ行われていません。';
+  scenarioMessage.textContent = 'この内容を確認済みにしました。プロジェクトは自動保存されます。';
   scenarioConfirmButton.disabled = true;
   scenarioSaveButton.disabled = false;
+  refreshVoiceGenerationControls();
+  scheduleScenarioAutosave(0);
+  refreshChapterWorkflow();
 });
 
 scenarioSaveButton.addEventListener('click', async () => {
@@ -2401,7 +3191,7 @@ type MouthShape = { start: number; end: number; expression: string };
 type ExpressionEvent = { start: number; end: number; intensity: number };
 type ArmRestPoseEntry = { bone: THREE.Object3D; hand: THREE.Object3D; rotation: THREE.Euler; zOffset: number };
 const mouthExpressions = ['aa', 'ih', 'ou', 'ee', 'oh'];
-const modelFacingOffset = -Math.PI / 6;
+let modelFacingOffset = -Math.PI / 6;
 let activeVrm: VRM | undefined;
 let activeMixer: THREE.AnimationMixer | undefined;
 let activeMouthTimeline: MouthShape[] = [];
@@ -2413,12 +3203,20 @@ let modelLoadGeneration = 0;
 const previousCharacterActionOffset = new THREE.Euler();
 let previousCharacterHappyValue: number | null = null;
 
+modelFlipButton.addEventListener('click', () => {
+  if (!activeVrm) return;
+  modelFacingOffset = THREE.MathUtils.euclideanModulo(modelFacingOffset + 2 * Math.PI, 2 * Math.PI) - Math.PI;
+  renderCompositionAt(Number(timeline.value));
+  setResult('モデルの向きを180度反転しました。');
+});
+
 function clearActiveModel() {
   modelLoadGeneration += 1;
   activeMixer?.stopAllAction();
   activeMixer = undefined;
   if (activeVrm) scene.remove(activeVrm.scene);
   activeVrm = undefined;
+  refreshChapterWorkflow();
   activeModelFile = undefined;
   activeModelStorageMode = 'copy';
   pendingModelStorageMode = undefined;
@@ -2433,6 +3231,7 @@ function clearActiveModel() {
   armRestPose = [];
   baselineArmHandHeights = { left: null, right: null };
   captureButton.disabled = true;
+  modelFlipButton.disabled = true;
   sequenceButton.disabled = true;
   benchmarkButton.disabled = true;
   videoExportButton.disabled = true;
@@ -2441,7 +3240,7 @@ function clearActiveModel() {
   runtimeStatus.dataset.state = '';
   modelReadout.textContent = 'モデル: --';
   mouthReadout.textContent = '口形: --';
-  renderAt(Number(timeline.value));
+  renderCompositionAt(Number(timeline.value));
 }
 
 function createRandomExpressionEvents(
@@ -2522,7 +3321,7 @@ function getCharacterActionAt(seconds: number) {
     .at(-1);
 }
 
-function renderAt(seconds: number) {
+function renderAt(seconds: number, applyTimelineEvents = true, narrationSeconds = seconds, applyNarrationEvents = true) {
   if (activeVrm) {
     if (previousCharacterHappyValue !== null) {
       activeVrm.expressionManager?.setValue('happy', previousCharacterHappyValue);
@@ -2538,11 +3337,11 @@ function renderAt(seconds: number) {
     activeVrm.scene.rotation.y = modelFacingOffset;
     applyCharacterArmRestPose();
     activeMixer?.setTime(seconds);
-    const baselineHappy = getExpressionIntensity(randomHappyEvents, seconds);
+    const baselineHappy = applyTimelineEvents ? getExpressionIntensity(randomHappyEvents, seconds) : 0;
     activeVrm.expressionManager?.setValue('happy', baselineHappy);
-    activeVrm.expressionManager?.setValue('blink', getExpressionIntensity(randomBlinkEvents, seconds));
-    const characterAction = getCharacterActionAt(seconds);
-    const actionElapsed = characterAction ? seconds - characterAction.atSeconds : Number.POSITIVE_INFINITY;
+    activeVrm.expressionManager?.setValue('blink', applyTimelineEvents ? getExpressionIntensity(randomBlinkEvents, seconds) : 0);
+    const characterAction = applyTimelineEvents && applyNarrationEvents ? getCharacterActionAt(narrationSeconds) : null;
+    const actionElapsed = characterAction ? narrationSeconds - characterAction.atSeconds : Number.POSITIVE_INFINITY;
     const actionDuration = 1.2;
     if (characterAction && actionElapsed < actionDuration) {
       const progress = Math.max(0, actionElapsed / actionDuration);
@@ -2565,10 +3364,10 @@ function renderAt(seconds: number) {
     }
     const chapterMouthTimeline = getSelectedChapterMouthTimeline();
     const mouthTimeline = activeMouthTimeline.length > 0 ? activeMouthTimeline : chapterMouthTimeline ?? [];
-    if (mouthTimeline.length > 0 || chapterMouthTimeline) {
+    if (mouthTimeline.length > 0 || chapterMouthTimeline || !applyTimelineEvents) {
       const mouthShape = mouthTimeline.find((entry) => seconds >= entry.start && seconds < entry.end);
       for (const expression of mouthExpressions) {
-        activeVrm.expressionManager?.setValue(expression, expression === mouthShape?.expression ? 0.9 : 0);
+        activeVrm.expressionManager?.setValue(expression, applyTimelineEvents && expression === mouthShape?.expression ? 0.9 : 0);
       }
       mouthReadout.textContent = `口形: ${mouthShape?.expression ?? '閉じ'}`;
     }
@@ -2579,9 +3378,20 @@ function renderAt(seconds: number) {
 
 function renderCompositionAt(seconds: number) {
   const frameSeconds = Math.round(seconds * 30) / 30;
-  syncCodeStagePreviews(frameSeconds);
+  const audioDuration = getSelectedChapterAudio()?.duration;
+  const audioSeconds = typeof audioDuration === 'number' && Number.isFinite(audioDuration)
+    ? getNarrationTime(frameSeconds, audioDuration)
+    : Math.max(0, frameSeconds - introSilenceSeconds);
+  const openingDuration = getSelectedChapterOpeningDuration();
+  const narrationSeconds = Math.max(0, audioSeconds - openingDuration);
+  syncCodeStagePreviews(narrationSeconds, frameSeconds);
   syncSubtitlePreview(frameSeconds);
-  renderAt(frameSeconds);
+  renderAt(
+    audioSeconds,
+    frameSeconds >= introSilenceSeconds,
+    narrationSeconds,
+    audioSeconds >= openingDuration,
+  );
 }
 
 function setResult(message: string) {
@@ -2606,7 +3416,10 @@ async function persistModelFile(file: File, contents?: ArrayBuffer): Promise<{
 }
 
 async function hashNarrationText(text: string) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${text}\0${currentPronunciationRulesSignature}`),
+  );
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
 }
 
@@ -2676,6 +3489,8 @@ fileInput.addEventListener('change', async () => {
     previousCharacterHappyValue = null;
     if (activeVrm) scene.remove(activeVrm.scene);
     activeVrm = loadedVrm;
+    refreshChapterWorkflow();
+    modelFacingOffset = -Math.PI / 6;
     activeModelFile = file;
     markAllChapterVideosStale();
     scene.add(activeVrm.scene);
@@ -2713,9 +3528,12 @@ fileInput.addEventListener('change', async () => {
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
     const height = Math.max(size.y, 0.5);
-    const rightCompositionOffset = height * 0.28;
-    controls.target.set(center.x - rightCompositionOffset, center.y, center.z);
-    camera.position.set(center.x - rightCompositionOffset, center.y + height * 0.08, center.z + height * 2.65);
+    const rightCompositionOffset = height * 1.05;
+    const framingTargetY = center.y + height * 0.14;
+    const characterFramingScale = 0.437;
+    const cameraDistance = height * 1.55 / characterFramingScale;
+    controls.target.set(center.x - rightCompositionOffset, framingTargetY, center.z);
+    camera.position.set(center.x - rightCompositionOffset, framingTargetY + height * 0.08, center.z + cameraDistance);
     camera.near = Math.max(height / 1000, 0.01);
     camera.far = height * 20;
     camera.updateProjectionMatrix();
@@ -2726,13 +3544,14 @@ fileInput.addEventListener('change', async () => {
 
     emptyState.hidden = true;
     captureButton.disabled = false;
+    modelFlipButton.disabled = false;
     sequenceButton.disabled = false;
     benchmarkButton.disabled = false;
     videoExportButton.disabled = false;
     runtimeStatus.textContent = 'VRM 1.0読込完了';
     runtimeStatus.dataset.state = 'ready';
     modelReadout.textContent = `モデル: ${file.name} / ${Math.round(size.x * 100) / 100} × ${Math.round(size.y * 100) / 100} × ${Math.round(size.z * 100) / 100}`;
-    renderAt(Number(timeline.value));
+    renderCompositionAt(Number(timeline.value));
     const expressions = activeVrm.expressionManager?.expressions.map((expression) => expression.expressionName) ?? [];
     const modelMessage = expressions.length > 0 ? `利用可能な表情: ${expressions.join(', ')}` : 'このモデルに表情プリセットはありません。';
     const savedModel = await persistModelFile(file, buffer);
@@ -2770,7 +3589,7 @@ motionInput.addEventListener('change', async () => {
     activeMixer = new THREE.AnimationMixer(activeVrm.scene);
     activeMixer.clipAction(clip).play();
     markAllChapterVideosStale();
-    renderAt(Number(timeline.value));
+    renderCompositionAt(Number(timeline.value));
     setResult(`VRMA読込完了: ${file.name} / ${clip.duration.toFixed(2)} 秒`);
   } catch (error) {
     activeMixer?.stopAllAction();
@@ -2803,7 +3622,7 @@ mouthTimelineInput.addEventListener('change', async () => {
 
     activeMouthTimeline = [...timelineEntries].sort((left, right) => left.start - right.start);
     markAllChapterVideosStale();
-    renderAt(Number(timeline.value));
+    renderCompositionAt(Number(timeline.value));
     setResult(`口パク時刻表読込完了: ${activeMouthTimeline.length}区間`);
   } catch (error) {
     setResult(error instanceof Error ? error.message : String(error));
@@ -2827,7 +3646,7 @@ rewindButton.addEventListener('click', () => {
 });
 
 captureButton.addEventListener('click', () => {
-  renderAt(Number(timeline.value));
+  renderCompositionAt(Number(timeline.value));
   canvas.toBlob((blob) => {
     if (!blob) {
       setResult('PNG生成に失敗しました。WebGL描画状態を確認してください。');
@@ -2868,7 +3687,7 @@ sequenceButton.addEventListener('click', async () => {
     runtimeStatus.textContent = '連番生成失敗';
     setResult(error instanceof Error ? error.message : String(error));
   } finally {
-    renderAt(Number(timeline.value));
+    renderCompositionAt(Number(timeline.value));
     sequenceButton.disabled = false;
     captureButton.disabled = false;
     benchmarkButton.disabled = false;
@@ -2902,11 +3721,11 @@ benchmarkButton.addEventListener('click', async () => {
     runtimeStatus.textContent = '計測失敗';
     setResult(error instanceof Error ? error.message : String(error));
   } finally {
-    renderAt(Number(timeline.value));
+    renderCompositionAt(Number(timeline.value));
     benchmarkButton.disabled = false;
     captureButton.disabled = false;
     setPlaybackLocked(false);
   }
 });
 
-renderAt(0);
+renderCompositionAt(0);

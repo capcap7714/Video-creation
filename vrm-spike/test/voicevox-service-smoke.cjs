@@ -1,8 +1,12 @@
 const assert = require('node:assert/strict');
+const {
+  convertPronunciationText,
+  defaultPronunciationRules,
+} = require('../electron/pronunciation-rules.cjs');
 const { listSpeakers, synthesizeSpeech } = require('../electron/voicevox-service.cjs');
 
-function makePcmWav() {
-  const pcm = Buffer.alloc(2400 * 2);
+function makePcmWav(durationSeconds = 1) {
+  const pcm = Buffer.alloc(24000 * 2 * durationSeconds);
   const header = Buffer.alloc(44);
   header.write('RIFF', 0);
   header.writeUInt32LE(36 + pcm.length, 4);
@@ -20,6 +24,34 @@ function makePcmWav() {
 }
 
 async function main() {
+assert.equal(
+  convertPronunciationText('printf関数とint型。sprintf、fprintf、uint、integer、printf2、_intは変えません。'),
+  'ぷりんとえふ関数といんと型。エス・ピー・アール・アイ・エヌ・ティー・エフ、エフ・ピー・アール・アイ・エヌ・ティー・エフ、ユー・アイ・エヌ・ティー、インテジャー、ピー・アール・アイ・エヌ・ティー・エフ2、_intは変えません。',
+);
+assert.equal(
+  convertPronunciationText('数値は値段を確認し、値だけを使います。', {
+    ...defaultPronunciationRules,
+    値: 'あたい',
+  }),
+  '数値は値段を確認し、あたいだけを使います。',
+);
+assert.equal(
+  convertPronunciationText('level number file'),
+  'レベル ナンバー ファイル',
+);
+assert.equal(
+  convertPronunciationText('value code printf int xyz', {
+    ...defaultPronunciationRules,
+    value: 'ばりゅー',
+    code: 'こーど登録',
+  }),
+  'ばりゅー こーど登録 ぷりんとえふ いんと エックス・ワイ・ゼット',
+);
+assert.equal(
+  convertPronunciationText('computer value', { value: 'ばりゅー' }),
+  'コンピューター ばりゅー',
+  'custom rules should override English auto-readings and built-in overrides',
+);
 const speakers = await listSpeakers(async (url, options) => {
   assert.equal(new URL(url).origin, 'http://127.0.0.1:50021');
   assert.equal(new URL(url).pathname, '/speakers');
@@ -33,17 +65,28 @@ assert.deepEqual(speakers, [{ name: '四国めたん', styles: [{ name: 'ノー�
 
 const requests = [];
 let lastAudioQuery;
-const result = await synthesizeSpeech({ text: '試験音声です。もう一文です。', styleId: 2 }, async (url, options) => {
+let lastSentence;
+const result = await synthesizeSpeech({
+  openingText: '冒頭の挨拶です。',
+  text: 'printfとintとsize_tと値とvalueとxyzを使います。もう一文です。',
+  styleId: 2,
+  pronunciationRules: { ...defaultPronunciationRules, size_t: 'サイズティー', 値: 'あたい' },
+}, async (url, options) => {
   const requestUrl = new URL(url);
   requests.push({ requestUrl, options });
   if (requestUrl.pathname === '/audio_query') {
     const sentence = requestUrl.searchParams.get('text');
-    assert.ok(['試験音声です。', 'もう一文です。'].includes(sentence));
+    lastSentence = sentence;
+    assert.ok([
+      '冒頭の挨拶です。',
+      'ぷりんとえふといんととサイズティーとあたいとバリューとエックス・ワイ・ゼットを使います。',
+      'もう一文です。',
+    ].includes(sentence));
     assert.equal(requestUrl.searchParams.get('speaker'), '2');
     assert.equal(options.method, 'POST');
     lastAudioQuery = {
       accent_phrases: [{
-        moras: [{ consonant: 't', consonant_length: 0.01, vowel: sentence === '試験音声です。' ? 'a' : 'i', vowel_length: 0.03 }],
+        moras: [{ consonant: 't', consonant_length: 0.01, vowel: sentence.includes('ぷりんとえふ') ? 'a' : 'i', vowel_length: 0.03 }],
         pause_mora: null,
       }],
       prePhonemeLength: 0.01,
@@ -56,18 +99,24 @@ const result = await synthesizeSpeech({ text: '試験音声です。もう一文
   assert.equal(requestUrl.searchParams.get('speaker'), '2');
   assert.deepEqual(JSON.parse(options.body), lastAudioQuery);
   assert.equal(options.headers['content-type'], 'application/json');
-  return new Response(makePcmWav(), { headers: { 'content-type': 'audio/wav' } });
+  const durationSeconds = lastSentence.includes('ぷりんとえふ') ? 2 : 1;
+  return new Response(makePcmWav(durationSeconds), { headers: { 'content-type': 'audio/wav' } });
 });
 assert.equal(Buffer.from(result.audio).toString('ascii', 0, 4), 'RIFF');
-assert.equal(Buffer.from(result.audio).readUInt32LE(40), 2400 * 2 * 2);
-assert.equal(requests.length, 4);
+assert.equal(Buffer.from(result.audio).readUInt32LE(40), 24000 * 2 * 4);
+assert.equal(requests.length, 6);
 assert.deepEqual(result.subtitles, [
-  { startSeconds: 0.01, endSeconds: 0.09, text: '試験音声です。' },
-  { startSeconds: 0.11, endSeconds: 0.19, text: 'もう一文です。' },
+  { startSeconds: 1.01, endSeconds: 2.81, text: 'printfとintとsize_tと値とvalueとxyzを使います。' },
+  { startSeconds: 3.01, endSeconds: 3.99, text: 'もう一文です。' },
 ]);
+assert.equal(result.openingDurationSeconds, 1.01);
+assert.ok(result.subtitles.every((subtitle) => !subtitle.text.includes('冒頭の挨拶')));
+assert.ok(Math.round((result.subtitles[1].startSeconds - result.subtitles[0].endSeconds) * 1000) >= 200);
+assert.ok(result.subtitles.every((subtitle) => subtitle.endSeconds - subtitle.startSeconds >= 0.8));
 assert.deepEqual(result.mouthTimeline, [
-  { start: 0.02, end: 0.05, expression: 'aa' },
-  { start: 0.12, end: 0.15, expression: 'ih' },
+  { start: 0.02, end: 0.05, expression: 'ih' },
+  { start: 1.02, end: 1.05, expression: 'aa' },
+  { start: 3.02, end: 3.05, expression: 'ih' },
 ]);
 
 await assert.rejects(

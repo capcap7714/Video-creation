@@ -91,7 +91,9 @@ async function main() {
   const speaker = speakers.find((candidate) => candidate.styles.some((style) => style.id === styleId));
   assert.ok(speaker, `VOICEVOX style ${styleId} is unavailable.`);
 
-  const synthesized = await synthesizeSpeech({ text: narration, styleId });
+  const chapterTitle = 'GCCで最初のCプログラムを動かす';
+  const openingText = `こんにちは。今日は${chapterTitle}について勉強します。`;
+  const synthesized = await synthesizeSpeech({ text: narration, openingText, styleId });
   const audio = Buffer.from(synthesized.audio);
   const audioDurationSeconds = getWavDurationSeconds(audio);
   assert.ok(synthesized.subtitles.length >= 10, 'The lesson should have sentence-level subtitles.');
@@ -101,14 +103,15 @@ async function main() {
   assert.equal(execution.stdout.trim(), 'Hello, C!');
 
   const codeLineCount = sourceCode.split('\n').length;
+  const bodyTime = (seconds) => Math.max(0, seconds - synthesized.openingDurationSeconds);
   const codeStages = [
-    { atSeconds: synthesized.subtitles[2].startSeconds, visibleLines: 1 },
-    { atSeconds: synthesized.subtitles[3].startSeconds, visibleLines: 2 },
-    { atSeconds: synthesized.subtitles[4].startSeconds, visibleLines: 3 },
-    { atSeconds: synthesized.subtitles[5].startSeconds, visibleLines: 4 },
-    { atSeconds: synthesized.subtitles[7].startSeconds, visibleLines: codeLineCount },
+    { atSeconds: bodyTime(synthesized.subtitles[2].startSeconds), visibleLines: 1 },
+    { atSeconds: bodyTime(synthesized.subtitles[3].startSeconds), visibleLines: 2 },
+    { atSeconds: bodyTime(synthesized.subtitles[4].startSeconds), visibleLines: 3 },
+    { atSeconds: bodyTime(synthesized.subtitles[5].startSeconds), visibleLines: 4 },
+    { atSeconds: bodyTime(synthesized.subtitles[7].startSeconds), visibleLines: codeLineCount },
   ];
-  const executionAtSeconds = synthesized.subtitles[8].startSeconds;
+  const executionAtSeconds = bodyTime(synthesized.subtitles[8].startSeconds);
   const request = {
     title: 'WindowsでGCCを使う C入門',
     overview: 'GCCを使ったCプログラムの作成、コンパイル、実行をHello, C!の例で学ぶ入門教材です。',
@@ -119,7 +122,7 @@ async function main() {
   const draft = {
     title: request.title,
     chapters: [{
-      title: 'GCCで最初のCプログラムを動かす',
+      title: chapterTitle,
       learningObjective: 'hello.cをGCCでコンパイルし、Windowsで実行できる。',
       targetMinutes: 2,
       narration,
@@ -130,9 +133,9 @@ async function main() {
       subtitles: synthesized.subtitles,
       subtitleNarrationHash: null,
       characterActions: [
-        { atSeconds: synthesized.subtitles[3].startSeconds, action: 'explain' },
+        { atSeconds: bodyTime(synthesized.subtitles[3].startSeconds), action: 'explain' },
         { atSeconds: executionAtSeconds, action: 'attention' },
-        { atSeconds: synthesized.subtitles.at(-1).startSeconds, action: 'happy' },
+        { atSeconds: bodyTime(synthesized.subtitles.at(-1).startSeconds), action: 'happy' },
       ],
       audioAsset: null,
       executionResult: {
@@ -156,6 +159,8 @@ async function main() {
   await projectStore.saveScenarioProject(projectDirectory, request, draft);
   await projectStore.saveChapterAudio(projectDirectory, 0, audio, {
     durationSeconds: audioDurationSeconds,
+    openingText,
+    openingDurationSeconds: synthesized.openingDurationSeconds,
     styleId,
     speakerName: speaker.name,
     narration,

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron');
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -15,7 +15,12 @@ const { findGcc, runCProgram } = require('./c-runner.cjs');
 const { checkFfmpeg } = require('./ffmpeg-service.cjs');
 const { formatSrt } = require('./subtitle-export.cjs');
 const { createVideoEncoder } = require('./video-export.cjs');
-const { listSpeakers, synthesizeSpeech } = require('./voicevox-service.cjs');
+const { listSpeakers, normalizeSubtitleTiming, synthesizeSpeech } = require('./voicevox-service.cjs');
+const {
+  defaultPronunciationRules,
+  getPronunciationRulesSignature,
+  normalizePronunciationRules,
+} = require('./pronunciation-rules.cjs');
 const {
   CompanyApiError,
   requestCompanyChatCompletion,
@@ -26,10 +31,48 @@ const devUrl = process.env.CVIDEO_DEV_URL || 'http://127.0.0.1:5173';
 const activeCExecutions = new Map();
 const activeVideoExports = new Map();
 const activeProjectDirectories = new Map();
+const completedVideoExports = new Map();
 let testVideoExportFailureInjected = false;
 const VIDEO_EXPORT_ESTIMATED_BITRATE_BPS = 12_000_000;
 const VIDEO_EXPORT_STORAGE_RESERVE_BYTES = 64 * 1024 * 1024;
+const VIDEO_INTRO_SILENCE_SECONDS = 2;
+const VIDEO_FINAL_HOLD_SECONDS = 3;
 app.setPath('userData', path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'CVideoToolSpike'));
+
+function getLastProjectDirectorySettingsPath() {
+  return path.join(app.getPath('userData'), 'last-project-directory.txt');
+}
+
+async function getProjectDialogInitialDirectory() {
+  try {
+    const directory = (await fs.readFile(getLastProjectDirectorySettingsPath(), 'utf8')).trim();
+    if (directory && (await fs.stat(directory)).isDirectory()) return directory;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.error('Could not read the last project directory setting.', error);
+  }
+  return app.getPath('documents');
+}
+
+async function rememberProjectDirectory(directory) {
+  const settingsPath = getLastProjectDirectorySettingsPath();
+  const temporaryPath = `${settingsPath}.${randomUUID()}.tmp`;
+  try {
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    await fs.writeFile(temporaryPath, directory, 'utf8');
+    await fs.rename(temporaryPath, settingsPath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    console.error('Could not save the last project directory setting.', error);
+  }
+}
+
+function offsetSubtitlesForVideo(subtitles) {
+  return subtitles.map((subtitle) => ({
+    ...subtitle,
+    startSeconds: subtitle.startSeconds + VIDEO_INTRO_SILENCE_SECONDS,
+    endSeconds: subtitle.endSeconds + VIDEO_INTRO_SILENCE_SECONDS,
+  }));
+}
 
 async function readScenarioAiProvider() {
   try {
@@ -47,6 +90,39 @@ async function writeScenarioAiProvider(provider) {
   await fs.mkdir(directory, { recursive: true });
   try {
     await fs.writeFile(temporaryPath, JSON.stringify({ provider }), 'utf8');
+    await fs.rename(temporaryPath, settingsPath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function getPronunciationSettingsPath() {
+  return path.join(app.getPath('userData'), 'pronunciation-dictionary-settings.json');
+}
+
+async function readPronunciationRules() {
+  let settings;
+  try {
+    settings = JSON.parse(await fs.readFile(getPronunciationSettingsPath(), 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return defaultPronunciationRules;
+    throw new Error('読み替え辞書設定を読み込めません。設定ファイルの内容とアクセス権を確認してください。');
+  }
+  if (!settings || typeof settings !== 'object' || !Object.hasOwn(settings, 'rules')) {
+    throw new Error('読み替え辞書設定の形式を確認してください。');
+  }
+  const rules = { ...settings.rules };
+  if (rules['数値'] === 'すうち') delete rules['数値'];
+  return normalizePronunciationRules(rules);
+}
+
+async function writePronunciationRules(rules) {
+  const settingsPath = getPronunciationSettingsPath();
+  const temporaryPath = `${settingsPath}.${randomUUID()}.tmp`;
+  await fs.mkdir(app.getPath('userData'), { recursive: true });
+  try {
+    await fs.writeFile(temporaryPath, JSON.stringify({ rules }), 'utf8');
     await fs.rename(temporaryPath, settingsPath);
   } catch (error) {
     await fs.rm(temporaryPath, { force: true }).catch(() => {});
@@ -174,6 +250,7 @@ async function generateCompanyScenario(input, previousDraft) {
 app.on('web-contents-created', (_event, contents) => {
   contents.on('destroyed', () => {
     activeProjectDirectories.delete(contents.id);
+    completedVideoExports.delete(contents.id);
     for (const [exportId, session] of activeVideoExports) {
       if (session.senderId === contents.id) {
         session.encoder.cancel();
@@ -201,14 +278,14 @@ function createTestWav() {
   return new Uint8Array(wav);
 }
 
-function createTestSubtitles(text) {
+function createTestSubtitles(text, audioDurationSeconds = 4, openingDurationSeconds = 0) {
   const sentences = (text.match(/[^。！？!?]+[。！？!?]*|[。！？!?]+/gu) ?? [text])
     .map((sentence) => sentence.trim())
     .filter(Boolean);
-  const segmentDuration = 4 / sentences.length;
+  const segmentDuration = (audioDurationSeconds - openingDurationSeconds) / sentences.length;
   return sentences.map((sentence, index) => ({
-    startSeconds: Math.round((index * segmentDuration + 0.02) * 1000) / 1000,
-    endSeconds: Math.round(((index + 1) * segmentDuration - 0.02) * 1000) / 1000,
+    startSeconds: Math.round((openingDurationSeconds + index * segmentDuration + 0.02) * 1000) / 1000,
+    endSeconds: Math.round((openingDurationSeconds + (index + 1) * segmentDuration - 0.02) * 1000) / 1000,
     text: sentence,
   }));
 }
@@ -376,6 +453,41 @@ ipcMain.handle('scenario:set-ai-provider', async (_event, provider) => {
   }
 });
 
+ipcMain.handle('voicevox:get-pronunciation-rules', async () => {
+  try {
+    const rules = await readPronunciationRules();
+    return { loaded: true, rules, signature: getPronunciationRulesSignature(rules) };
+  } catch (error) {
+    return {
+      loaded: false,
+      message: error instanceof Error ? error.message : '読み替え辞書設定を読み込めません。',
+    };
+  }
+});
+
+ipcMain.handle('voicevox:set-pronunciation-rules', async (_event, rules) => {
+  let normalizedRules;
+  try {
+    normalizedRules = normalizePronunciationRules(rules);
+  } catch (error) {
+    return {
+      saved: false,
+      message: error instanceof Error ? error.message : '読み替え辞書の内容を確認してください。',
+    };
+  }
+  try {
+    await writePronunciationRules(normalizedRules);
+    return {
+      saved: true,
+      rules: normalizedRules,
+      signature: getPronunciationRulesSignature(normalizedRules),
+      message: '読み替え辞書を保存しました。すべてのプロジェクト・章に適用されます。',
+    };
+  } catch {
+    return { saved: false, message: '読み替え辞書を保存できませんでした。設定フォルダーのアクセス権を確認してください。' };
+  }
+});
+
 ipcMain.handle('scenario:get-company-api-key-status', async () => ({
   available: safeStorage.isEncryptionAvailable(),
   configured: Boolean(await readScenarioApiKey()),
@@ -443,10 +555,21 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
   try {
     const loaded = await loadScenarioProject(projectDirectory);
     chapter = loaded.draft.chapters[payload.chapterIndex];
-    const storedAudio = await loadChapterAudio(projectDirectory, payload.chapterIndex);
-    if (!chapter || !storedAudio || !chapter.audioAsset) {
+    if (!chapter) {
+      return { started: false, message: '書き出す章がプロジェクトにありません。' };
+    }
+    const pronunciationRules = await readPronunciationRules();
+    const storedAudio = await loadChapterAudio(projectDirectory, payload.chapterIndex, pronunciationRules);
+    if (!storedAudio) {
+      return {
+        started: false,
+        message: '現在の読み替え辞書設定に対応する保存済み音声がありません。章音声を現在の設定で再生成してください。',
+      };
+    }
+    if (!chapter.audioAsset) {
       return { started: false, message: 'この章の保存済み音声がありません。音声を生成してプロジェクトを保存してください。' };
     }
+    chapter.audioAsset = storedAudio.audioAsset;
     if (chapter.subtitles.some((subtitle) => subtitle.endSeconds > storedAudio.audioAsset.durationSeconds)) {
       return { started: false, message: '字幕が章音声の範囲を超えています。字幕時刻を修正してください。' };
     }
@@ -457,7 +580,7 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
 
   let subtitles;
   try {
-    subtitles = formatSrt(chapter.subtitles);
+    subtitles = formatSrt(offsetSubtitlesForVideo(chapter.subtitles));
   } catch (error) {
     return { started: false, message: error instanceof Error ? error.message : '字幕を確認してください。' };
   }
@@ -486,7 +609,10 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
     };
   }
   const availableBytes = await getAvailableBytes(path.dirname(outputPath));
-  const estimatedOutputBytes = estimateVideoExportBytes(chapter.audioAsset.durationSeconds, audio, subtitles);
+  const contentDurationSeconds = chapter.audioAsset.durationSeconds
+    + VIDEO_INTRO_SILENCE_SECONDS
+    + VIDEO_FINAL_HOLD_SECONDS;
+  const estimatedOutputBytes = estimateVideoExportBytes(contentDurationSeconds, audio, subtitles);
   if (availableBytes !== null && availableBytes < estimatedOutputBytes) {
     const warning = await dialog.showMessageBox(owner, {
       type: 'warning',
@@ -526,13 +652,14 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
       audioPath,
       subtitlesPath,
       outputPath: temporaryOutputPath,
-      contentDurationSeconds: chapter.audioAsset.durationSeconds,
+      contentDurationSeconds,
     });
     const exportId = randomUUID();
-    const contentFrames = Math.ceil(chapter.audioAsset.durationSeconds * 30);
+    const contentFrames = Math.ceil(contentDurationSeconds * 30);
     const frameCount = contentFrames + 90;
     activeVideoExports.set(exportId, {
       senderId: event.sender.id,
+      projectDirectory,
       encoder,
       workingDirectory,
       outputPath,
@@ -547,7 +674,7 @@ ipcMain.handle('video:export-start', async (event, payload = {}) => {
       exportId,
       frameCount,
       chapterTitle: chapter.title,
-      contentDurationSeconds: chapter.audioAsset.durationSeconds,
+      contentDurationSeconds,
       creditText: `VOICEVOX: ${chapter.audioAsset.speakerName ?? `話者スタイルID ${chapter.audioAsset.styleId}`}`,
       message: 'フレームを生成しています。',
     };
@@ -617,12 +744,39 @@ ipcMain.handle('video:export-finish', async (event, payload = {}) => {
       for (const replacement of backups.reverse()) await fs.rename(replacement.backup, replacement.destination);
       throw error;
     }
+    completedVideoExports.set(event.sender.id, {
+      projectDirectory: session.projectDirectory,
+      path: session.outputPath,
+    });
     return { saved: true, message: 'MP4動画とSRT字幕を保存しました。', path: session.outputPath };
   } catch (error) {
     return { saved: false, message: error instanceof Error ? error.message : '動画を書き出せませんでした。' };
   } finally {
     activeVideoExports.delete(payload.exportId);
     await fs.rm(session.workingDirectory, { recursive: true, force: true });
+  }
+});
+
+ipcMain.handle('video:open-last-export', async (event) => {
+  const completedExport = completedVideoExports.get(event.sender.id);
+  if (!completedExport || activeProjectDirectories.get(event.sender.id) !== completedExport.projectDirectory) {
+    return { opened: false, message: 'このプロジェクトで書き出したMP4がありません。先に書き出してください。' };
+  }
+  try {
+    const file = await fs.stat(completedExport.path);
+    if (!file.isFile()) {
+      return { opened: false, message: '書き出したMP4ファイルが見つかりません。もう一度書き出してください。' };
+    }
+  } catch {
+    return { opened: false, message: '書き出したMP4ファイルが見つかりません。もう一度書き出してください。' };
+  }
+
+  try {
+    const errorMessage = await shell.openPath(completedExport.path);
+    if (errorMessage) return { opened: false, message: `MP4を開けませんでした: ${errorMessage}` };
+    return { opened: true, message: '書き出したMP4を開きました。' };
+  } catch {
+    return { opened: false, message: 'MP4を開けませんでした。既定の動画プレーヤーを確認してください。' };
   }
 });
 
@@ -643,23 +797,51 @@ ipcMain.handle('voicevox:synthesize', async (_event, payload = {}) => {
   if (
     typeof payload.text !== 'string'
     || payload.text.trim().length === 0
-    || payload.text.length > 1000
+    || payload.text.length > 10000
+    || (payload.openingText !== undefined && (
+      typeof payload.openingText !== 'string'
+      || payload.openingText.length > 200
+    ))
     || !Number.isSafeInteger(payload.styleId)
     || payload.styleId < 0
   ) {
-    return { generated: false, message: '読み上げ文と話者を確認してください。' };
+    return { generated: false, message: '読み上げ文（10,000文字以内）と話者を確認してください。' };
   }
+  let pronunciationRules;
+  try {
+    pronunciationRules = await readPronunciationRules();
+  } catch (error) {
+    return {
+      generated: false,
+      message: error instanceof Error ? error.message : '読み替え辞書設定を読み込めません。',
+    };
+  }
+  const pronunciationRulesSignature = getPronunciationRulesSignature(pronunciationRules);
   if (process.env.NODE_ENV === 'test' && process.env.CVIDEO_TEST_VOICEVOX_MODE === 'speakers') {
+    const openingDurationSeconds = payload.openingText ? 0.8 : 0;
+    const audioDurationSeconds = 4;
     return {
       generated: true,
       audio: createTestWav(),
-      subtitles: createTestSubtitles(payload.text),
+      subtitles: normalizeSubtitleTiming(
+        createTestSubtitles(payload.text, audioDurationSeconds, openingDurationSeconds),
+        audioDurationSeconds,
+      ),
       mouthTimeline: createTestMouthTimeline(),
+      openingDurationSeconds,
+      pronunciationRulesSignature,
     };
   }
   try {
-    return await synthesizeSpeech({ ...payload, text: payload.text.trim() })
-      .then(({ audio, subtitles, mouthTimeline }) => ({ generated: true, audio, subtitles, mouthTimeline }));
+    return await synthesizeSpeech({ ...payload, text: payload.text.trim(), pronunciationRules })
+      .then(({ audio, subtitles, mouthTimeline, openingDurationSeconds }) => ({
+        generated: true,
+        audio,
+        subtitles,
+        mouthTimeline,
+        openingDurationSeconds,
+        pronunciationRulesSignature,
+      }));
   } catch (error) {
     return {
       generated: false,
@@ -678,6 +860,9 @@ ipcMain.handle('voicevox:save-chapter-audio', async (event, payload = {}) => {
     || !(payload.audio instanceof Uint8Array)
     || payload.audio.byteLength > 50 * 1024 * 1024
     || typeof payload.narration !== 'string'
+    || typeof payload.openingText !== 'string'
+    || typeof payload.pronunciationRulesSignature !== 'string'
+    || !Number.isFinite(payload.openingDurationSeconds)
     || typeof payload.speakerName !== 'string'
     || payload.speakerName.trim().length === 0
     || payload.speakerName.length > 100
@@ -685,12 +870,19 @@ ipcMain.handle('voicevox:save-chapter-audio', async (event, payload = {}) => {
     return { saved: false, message: '章音声の保存内容を確認してください。' };
   }
   try {
+    const pronunciationRules = await readPronunciationRules();
+    if (getPronunciationRulesSignature(pronunciationRules) !== payload.pronunciationRulesSignature) {
+      return { saved: false, message: '音声生成中に読み替え辞書が変更されました。現在の設定で音声を再生成してください。' };
+    }
     const audioAsset = await saveChapterAudio(projectDirectory, payload.chapterIndex, payload.audio, {
       durationSeconds: payload.durationSeconds,
+      openingText: payload.openingText,
+      openingDurationSeconds: payload.openingDurationSeconds,
       styleId: payload.styleId,
       narration: payload.narration,
       speakerName: payload.speakerName,
       mouthTimeline: payload.mouthTimeline,
+      pronunciationRules,
     });
     return { saved: true, audioAsset };
   } catch {
@@ -702,7 +894,11 @@ ipcMain.handle('voicevox:load-chapter-audio', async (event, chapterIndex) => {
   const projectDirectory = activeProjectDirectories.get(event.sender.id);
   if (!projectDirectory) return null;
   try {
-    return await loadChapterAudio(projectDirectory, chapterIndex);
+    const pronunciationRules = await readPronunciationRules();
+    const storedAudio = await loadChapterAudio(projectDirectory, chapterIndex, pronunciationRules);
+    return storedAudio
+      ? { ...storedAudio, pronunciationRulesSignature: getPronunciationRulesSignature(pronunciationRules) }
+      : null;
   } catch {
     return null;
   }
@@ -714,7 +910,7 @@ ipcMain.handle('subtitle:export-srt', async (event, payload = {}) => {
   }
   let contents;
   try {
-    contents = formatSrt(payload.subtitles);
+    contents = formatSrt(offsetSubtitlesForVideo(payload.subtitles));
   } catch (error) {
     return { saved: false, message: error instanceof Error ? error.message : '字幕を確認してください。' };
   }
@@ -901,7 +1097,13 @@ ipcMain.handle('scenario:generate', async (_event, payload = {}) => {
       });
       const testClient = {
         createSession: async () => ({
-          sendAndWait: async () => generatedDraft,
+          sendAndWait: async () => {
+            const delayMs = Number(process.env.CVIDEO_TEST_SCENARIO_GENERATION_DELAY_MS);
+            if (Number.isSafeInteger(delayMs) && delayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+            return generatedDraft;
+          },
           disconnect: async () => {},
         }),
       };
@@ -961,6 +1163,39 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+ipcMain.handle('scenario:prepare-new-project', async (event) => {
+  if (activeProjectDirectories.has(event.sender.id)) {
+    return { prepared: true, newProject: false, message: '既存プロジェクトの保存先を使用します。' };
+  }
+
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const selected = await dialog.showOpenDialog(owner, {
+    title: '新規プロジェクトの保存先を選択',
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: await getProjectDialogInitialDirectory(),
+  });
+  if (selected.canceled || selected.filePaths.length === 0) {
+    return { prepared: false, cancelled: true, message: '保存先の選択をキャンセルしました。新規プロジェクトの作成を中止しました。' };
+  }
+
+  const projectDirectory = selected.filePaths[0];
+  try {
+    await fs.access(path.join(projectDirectory, 'project.json'));
+    return {
+      prepared: false,
+      message: '選択したフォルダーには既存プロジェクトがあります。既存プロジェクトを開くか、別の保存先を選んでください。',
+    };
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      return { prepared: false, message: '選択した保存先を確認できません。別のフォルダーを選んでください。' };
+    }
+  }
+
+  activeProjectDirectories.set(event.sender.id, projectDirectory);
+  await rememberProjectDirectory(projectDirectory);
+  return { prepared: true, newProject: true, message: '新規プロジェクトの保存先を設定しました。' };
+});
+
 ipcMain.handle('scenario:save', async (event, payload = {}) => {
   const { ScenarioDraftSchema, ScenarioRequestSchema } = await import('../src/scenario.ts');
   const requestResult = ScenarioRequestSchema.safeParse(payload?.request);
@@ -970,36 +1205,41 @@ ipcMain.handle('scenario:save', async (event, payload = {}) => {
   }
 
   const owner = BrowserWindow.fromWebContents(event.sender);
-  const selected = await dialog.showOpenDialog(owner, {
-    title: 'プロジェクトの保存先を選択',
-    properties: ['openDirectory', 'createDirectory'],
-  });
-  if (selected.canceled || selected.filePaths.length === 0) {
-    return { saved: false, cancelled: true, message: '保存をキャンセルしました。確認済みの内容は保持されています。' };
-  }
-
-  const projectPath = path.join(selected.filePaths[0], 'project.json');
-  try {
-    await fs.access(projectPath);
-    const decision = await dialog.showMessageBox(owner, {
-      type: 'warning',
-      buttons: ['上書き保存', 'キャンセル'],
-      defaultId: 1,
-      cancelId: 1,
-      message: '選択したフォルダーには既にproject.jsonがあります。上書きしますか？',
+  let projectDirectory = activeProjectDirectories.get(event.sender.id);
+  if (!projectDirectory) {
+    const selected = await dialog.showOpenDialog(owner, {
+      title: 'プロジェクトの保存先を選択',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: await getProjectDialogInitialDirectory(),
     });
-    if (decision.response !== 0) {
-      return { saved: false, cancelled: true, message: '上書きをキャンセルしました。確認済みの内容は保持されています。' };
+    if (selected.canceled || selected.filePaths.length === 0) {
+      return { saved: false, cancelled: true, message: '保存をキャンセルしました。確認済みの内容は保持されています。' };
     }
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      return { saved: false, message: '保存先を確認できません。別のフォルダーを選んでください。' };
+
+    projectDirectory = selected.filePaths[0];
+    try {
+      await fs.access(path.join(projectDirectory, 'project.json'));
+      const decision = await dialog.showMessageBox(owner, {
+        type: 'warning',
+        buttons: ['上書き保存', 'キャンセル'],
+        defaultId: 1,
+        cancelId: 1,
+        message: '選択したフォルダーには既にproject.jsonがあります。上書きしますか？',
+      });
+      if (decision.response !== 0) {
+        return { saved: false, cancelled: true, message: '上書きをキャンセルしました。確認済みの内容は保持されています。' };
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        return { saved: false, message: '保存先を確認できません。別のフォルダーを選んでください。' };
+      }
     }
   }
 
   try {
-    const savedPath = await saveScenarioProject(selected.filePaths[0], requestResult.data, draftResult.data);
-    activeProjectDirectories.set(event.sender.id, selected.filePaths[0]);
+    const savedPath = await saveScenarioProject(projectDirectory, requestResult.data, draftResult.data);
+    activeProjectDirectories.set(event.sender.id, projectDirectory);
+    await rememberProjectDirectory(projectDirectory);
     return { saved: true, path: savedPath, message: 'プロジェクトを保存しました。' };
   } catch {
     return {
@@ -1010,11 +1250,6 @@ ipcMain.handle('scenario:save', async (event, payload = {}) => {
 });
 
 ipcMain.handle('scenario:auto-save', async (event, payload = {}) => {
-  const projectDirectory = activeProjectDirectories.get(event.sender.id);
-  if (!projectDirectory) {
-    return { saved: false, unavailable: true, message: '自動保存先がありません。先にプロジェクトを保存してください。' };
-  }
-
   const { ScenarioDraftSchema, ScenarioRequestSchema } = await import('../src/scenario.ts');
   const requestResult = ScenarioRequestSchema.safeParse(payload?.request);
   const draftResult = ScenarioDraftSchema.safeParse(payload?.draft);
@@ -1022,8 +1257,42 @@ ipcMain.handle('scenario:auto-save', async (event, payload = {}) => {
     return { saved: false, invalid: true, message: '入力が未完成のため自動保存できません。必須項目を確認してください。' };
   }
 
+  let projectDirectory = activeProjectDirectories.get(event.sender.id);
+  if (!projectDirectory) {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const selected = await dialog.showOpenDialog(owner, {
+      title: '新規プロジェクトの保存先を選択',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: await getProjectDialogInitialDirectory(),
+    });
+    if (selected.canceled || selected.filePaths.length === 0) {
+      return { saved: false, unavailable: true, cancelled: true, message: '保存先の選択をキャンセルしました。編集内容は画面に保持されています。' };
+    }
+
+    projectDirectory = selected.filePaths[0];
+    try {
+      await fs.access(path.join(projectDirectory, 'project.json'));
+      const decision = await dialog.showMessageBox(owner, {
+        type: 'warning',
+        buttons: ['上書き保存', 'キャンセル'],
+        defaultId: 1,
+        cancelId: 1,
+        message: '選択したフォルダーには既にproject.jsonがあります。上書きしますか？',
+      });
+      if (decision.response !== 0) {
+        return { saved: false, unavailable: true, cancelled: true, message: '上書き保存をキャンセルしました。編集内容は画面に保持されています。' };
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        return { saved: false, unavailable: true, message: '保存先を確認できません。別のフォルダーを選んでください。' };
+      }
+    }
+  }
+
   try {
     const savedPath = await saveScenarioProject(projectDirectory, requestResult.data, draftResult.data);
+    activeProjectDirectories.set(event.sender.id, projectDirectory);
+    await rememberProjectDirectory(projectDirectory);
     return { saved: true, path: savedPath, message: '自動保存しました。' };
   } catch {
     return { saved: false, message: '自動保存に失敗しました。保存先の権限と空き容量を確認してください。' };
@@ -1085,6 +1354,7 @@ ipcMain.handle('scenario:open', async (event) => {
   const selected = await dialog.showOpenDialog(owner, {
     title: 'プロジェクトを開く',
     properties: ['openDirectory'],
+    defaultPath: await getProjectDialogInitialDirectory(),
   });
   if (selected.canceled || selected.filePaths.length === 0) {
     return { opened: false, cancelled: true, message: 'プロジェクトを開く操作をキャンセルしました。' };
@@ -1099,6 +1369,7 @@ ipcMain.handle('scenario:open', async (event) => {
       return { opened: false, message: 'プロジェクトの内容が現在のシナリオ形式に合いません。' };
     }
     activeProjectDirectories.set(event.sender.id, selected.filePaths[0]);
+    await rememberProjectDirectory(selected.filePaths[0]);
     return {
       opened: true,
       request: requestResult.data,
